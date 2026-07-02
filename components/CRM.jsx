@@ -272,16 +272,22 @@ function DealForm({ initial, contacts, onSave, onClose }) {
 
 function AccountForm({ initial, network, onSave, onClose }) {
   const [name, setName] = useState(initial?.name || "");
+  const [metaAccountId, setMetaAccountId] = useState(initial?.metaAccountId || "");
   const submit = (e) => {
     e.preventDefault();
     if (!name.trim()) return;
-    onSave({ ...initial, name: name.trim(), network: initial?.network || network });
+    onSave({ ...initial, name: name.trim(), network: initial?.network || network, metaAccountId: metaAccountId.trim() || null });
   };
   return (
     <form onSubmit={submit}>
       <Field label={`${network === "google" ? "Google" : "Meta"} account name`}>
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} required placeholder="e.g. Kumpulan Lebar Daun" />
       </Field>
+      {network === "meta" && (
+        <Field label="Meta Ad Account ID">
+          <input value={metaAccountId} onChange={(e) => setMetaAccountId(e.target.value)} style={inputStyle} placeholder="e.g. 123456789 (from Business Manager)" />
+        </Field>
+      )}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <button type="button" onClick={onClose} style={btnSecondary}>Cancel</button>
         <button type="submit" style={btnPrimary}>{initial ? "Save" : "Add account"}</button>
@@ -819,16 +825,26 @@ function ReportView({
 /* ============================================================
    accounts list (per network)
 ============================================================ */
-function AccountsList({ network, accounts, campaigns, onAdd, onEdit, onDelete }) {
+function AccountsList({ network, accounts, campaigns, onAdd, onEdit, onDelete, onFetchMeta }) {
   const list = accounts.filter((a) => a.network === network);
   return (
     <div>
+      {network === "meta" && (
+        <div style={{ marginBottom: 14, display: "flex", gap: 8 }}>
+          <button onClick={onFetchMeta} style={btnPrimary}><RefreshCw size={13} /> Fetch from Meta</button>
+          <button onClick={onAdd} style={btnSecondary}><Plus size={14} /> Add manually</button>
+        </div>
+      )}
       {list.length === 0 ? (
         <div style={{ ...cardStyle, padding: "40px 24px", textAlign: "center" }}>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>
             No {network === "google" ? "Google" : "Meta"} ad accounts yet.
           </div>
-          <button onClick={onAdd} style={btnPrimary}><Plus size={14} /> Add first account</button>
+          {network === "meta" ? (
+            <button onClick={onFetchMeta} style={btnPrimary}><RefreshCw size={13} /> Fetch from Meta</button>
+          ) : (
+            <button onClick={onAdd} style={btnPrimary}><Plus size={14} /> Add first account</button>
+          )}
         </div>
       ) : (
         <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
@@ -838,7 +854,10 @@ function AccountsList({ network, accounts, campaigns, onAdd, onEdit, onDelete })
               <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: i < list.length - 1 ? `1px solid ${C.lineSoft}` : "none" }}>
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 14, color: C.ink }}>{a.name}</div>
-                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{count} campaign{count === 1 ? "" : "s"}</div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
+                    {count} campaign{count === 1 ? "" : "s"}
+                    {a.metaAccountId && <span style={{ marginLeft: 8, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: C.muted }}>act_{a.metaAccountId}</span>}
+                  </div>
                 </div>
                 <div style={{ display: "flex", gap: 4 }}>
                   <button onClick={() => onEdit(a)} aria-label="Edit account" style={iconBtn}><Pencil size={15} /></button>
@@ -850,6 +869,93 @@ function AccountsList({ network, accounts, campaigns, onAdd, onEdit, onDelete })
         </div>
       )}
     </div>
+  );
+}
+
+/* ============================================================
+   meta account picker (fetches from API)
+============================================================ */
+function MetaAccountPicker({ existingAccounts, onImport, onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [available, setAvailable] = useState([]);
+  const [selected, setSelected] = useState({});
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/meta/accounts");
+        const json = await res.json();
+        if (json.error) { setError(json.error); setLoading(false); return; }
+
+        // Filter out already-imported accounts
+        const existingMetaIds = new Set(existingAccounts.filter((a) => a.metaAccountId).map((a) => a.metaAccountId));
+        const filtered = (json.accounts || []).filter((a) => !existingMetaIds.has(a.metaAccountId));
+        setAvailable(filtered);
+      } catch (e) {
+        setError("Could not reach the server. Make sure META_ACCESS_TOKEN is set in your environment variables.");
+      }
+      setLoading(false);
+    })();
+  }, [existingAccounts]);
+
+  const toggle = (metaId) => setSelected((prev) => ({ ...prev, [metaId]: !prev[metaId] }));
+  const selectedCount = Object.values(selected).filter(Boolean).length;
+
+  const doImport = () => {
+    const toImport = available.filter((a) => selected[a.metaAccountId]);
+    onImport(toImport);
+  };
+
+  return (
+    <Modal title="Import Meta Ad Accounts" onClose={onClose} wide>
+      {loading && <div style={{ padding: "30px 0", textAlign: "center", color: C.muted, fontSize: 13 }}>Fetching accounts from Meta…</div>}
+      {error && (
+        <div style={{ padding: "20px", background: C.dangerBg, borderRadius: 8, color: C.danger, fontSize: 13, marginBottom: 14 }}>
+          {error}
+        </div>
+      )}
+      {!loading && !error && available.length === 0 && (
+        <div style={{ padding: "30px 0", textAlign: "center", color: C.muted, fontSize: 13 }}>
+          All ad accounts from your Business Manager have already been imported.
+        </div>
+      )}
+      {!loading && !error && available.length > 0 && (
+        <>
+          <div style={{ fontSize: 13, color: C.inkSoft, marginBottom: 14 }}>
+            {available.length} account{available.length === 1 ? "" : "s"} found. Select which ones to add:
+          </div>
+          <div style={{ maxHeight: 340, overflowY: "auto", border: `1px solid ${C.line}`, borderRadius: 8, marginBottom: 16 }}>
+            {available.map((a, i) => (
+              <label key={a.metaAccountId} style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", cursor: "pointer",
+                borderBottom: i < available.length - 1 ? `1px solid ${C.lineSoft}` : "none",
+                background: selected[a.metaAccountId] ? C.primarySoft : "transparent",
+              }}>
+                <input type="checkbox" checked={!!selected[a.metaAccountId]} onChange={() => toggle(a.metaAccountId)}
+                  style={{ width: 16, height: 16, accentColor: C.primary }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13.5, color: C.ink }}>{a.name}</div>
+                  <div style={{ fontSize: 11.5, color: C.muted, marginTop: 2, fontFamily: "JetBrains Mono, monospace" }}>
+                    act_{a.metaAccountId} · {a.currency} · {a.status}
+                  </div>
+                </div>
+              </label>
+            ))}
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 12, color: C.muted }}>{selectedCount} selected</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={onClose} style={btnSecondary}>Cancel</button>
+              <button onClick={doImport} disabled={selectedCount === 0}
+                style={{ ...btnPrimary, opacity: selectedCount === 0 ? 0.5 : 1 }}>
+                Import {selectedCount > 0 ? selectedCount : ""} account{selectedCount === 1 ? "" : "s"}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -1092,14 +1198,91 @@ export default function CRM() {
   };
   const deleteCampaign = (id) => { if (window.confirm("Delete this campaign?")) persist("crm-campaigns", campaigns.filter((c) => c.id !== id), setCampaigns); };
 
-  // sync + download (prototype actions)
-  const doSync = (network) => {
-    const updated = { ...syncMap, [network]: Date.now() };
-    persist("crm-sync", updated, setSyncMap);
-    setToast(`${network === "google" ? "Google" : "Meta"} sync complete (prototype — no live API call)`);
+  // ── Meta account import ──
+  const [showMetaPicker, setShowMetaPicker] = useState(false);
+
+  const importMetaAccounts = (metaAccounts) => {
+    const newAccounts = metaAccounts.map((a) => ({
+      id: uid(),
+      name: a.name,
+      network: "meta",
+      metaAccountId: a.metaAccountId,
+      currency: a.currency,
+      createdAt: Date.now(),
+    }));
+    const updated = [...accounts, ...newAccounts];
+    persist("crm-accounts", updated, setAccounts);
+    if (!metaAccountId && newAccounts.length) setMetaAccountId(newAccounts[0].id);
+    setShowMetaPicker(false);
+    setToast(`Imported ${newAccounts.length} account${newAccounts.length === 1 ? "" : "s"} from Meta`);
   };
+
+  // ── Sync: calls Meta Marketing API via our backend route ──
+  const [syncing, setSyncing] = useState(false);
+
+  const doSync = async (network, accountIdOverride) => {
+    if (network === "google") {
+      // Google sync not yet wired — placeholder
+      const updated = { ...syncMap, google: Date.now() };
+      persist("crm-sync", updated, setSyncMap);
+      setToast("Google sync is not connected yet — add campaigns manually for now.");
+      return;
+    }
+
+    // Find the selected account and its metaAccountId
+    const selectedId = accountIdOverride || metaAccountId;
+    const account = accounts.find((a) => a.id === selectedId);
+    if (!account?.metaAccountId) {
+      setToast("This account has no Meta Ad Account ID — edit it and add one, or re-import from Meta.");
+      return;
+    }
+
+    setSyncing(true);
+    setToast("Syncing from Meta…");
+
+    try {
+      const res = await fetch("/api/meta/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metaAccountId: account.metaAccountId, month: metaMonth }),
+      });
+      const json = await res.json();
+
+      if (json.error) {
+        setToast(`Sync failed: ${json.error}`);
+        setSyncing(false);
+        return;
+      }
+
+      // Remove old campaigns for this account+month, add fresh ones
+      const freshCampaigns = (json.campaigns || []).map((c) => ({
+        ...c,
+        id: uid(),
+        accountId: selectedId,
+        month: metaMonth,
+        network: "meta",
+        createdAt: Date.now(),
+      }));
+
+      const otherCampaigns = campaigns.filter(
+        (c) => !(c.accountId === selectedId && c.month === metaMonth && c.network === "meta")
+      );
+      const updatedCampaigns = [...otherCampaigns, ...freshCampaigns];
+      persist("crm-campaigns", updatedCampaigns, setCampaigns);
+
+      // Update sync timestamp
+      const updatedSync = { ...syncMap, meta: Date.now() };
+      persist("crm-sync", updatedSync, setSyncMap);
+
+      setToast(`Synced ${freshCampaigns.length} campaign${freshCampaigns.length === 1 ? "" : "s"} from Meta`);
+    } catch (e) {
+      setToast("Sync failed — check your network connection and env variables.");
+    }
+    setSyncing(false);
+  };
+
   const doDownload = (network) => {
-    setToast(`PDF export requires a backend renderer — try copy/printing the page for now.`);
+    setToast("PDF export opens your browser's print dialog (sidebar hidden automatically).");
     try { window.print(); } catch (e) {}
   };
 
@@ -1222,13 +1405,15 @@ export default function CRM() {
             <AccountsList network="meta" accounts={accounts} campaigns={campaigns}
               onAdd={() => setModal({ type: "account", data: null, network: "meta" })}
               onEdit={(a) => setModal({ type: "account", data: a, network: a.network })}
-              onDelete={deleteAccount} />
+              onDelete={deleteAccount}
+              onFetchMeta={() => setShowMetaPicker(true)} />
           )}
           {view === "ad-accounts-google" && (
             <AccountsList network="google" accounts={accounts} campaigns={campaigns}
               onAdd={() => setModal({ type: "account", data: null, network: "google" })}
               onEdit={(a) => setModal({ type: "account", data: a, network: a.network })}
-              onDelete={deleteAccount} />
+              onDelete={deleteAccount}
+              onFetchMeta={() => {}} />
           )}
 
           {view === "users" && <StubView title="Users" blurb="Team member management — invites, roles, permissions. Needs an auth backend to be functional." />}
@@ -1263,6 +1448,13 @@ export default function CRM() {
             onSave={saveCampaign} onClose={() => setModal(null)}
           />
         </Modal>
+      )}
+      {showMetaPicker && (
+        <MetaAccountPicker
+          existingAccounts={accounts}
+          onImport={importMetaAccounts}
+          onClose={() => setShowMetaPicker(false)}
+        />
       )}
       {toast && (
         <div style={{ position: "fixed", bottom: 20, right: 20, background: C.ink, color: "#fff", padding: "10px 16px", borderRadius: 6, fontSize: 13, boxShadow: "0 8px 20px rgba(15,23,42,0.20)", maxWidth: 320, zIndex: 70 }}>
