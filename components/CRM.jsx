@@ -208,6 +208,29 @@ function Metric({ label, value, sub }) {
 
 const tooltipStyle = { backgroundColor: C.card, border: `1px solid ${C.line}`, borderRadius: 6, fontSize: 12, fontFamily: "Inter, sans-serif", padding: "8px 10px" };
 
+async function parseApiResponse(res) {
+  const text = await res.text();
+  let json = {};
+
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(
+        res.ok
+          ? "The server returned an invalid response."
+          : `Request failed: ${res.status} ${res.statusText}`
+      );
+    }
+  }
+
+  if (!res.ok) {
+    throw new Error(json.error || `Request failed: ${res.status} ${res.statusText}`);
+  }
+
+  return json;
+}
+
 /* ============================================================
    forms
 ============================================================ */
@@ -885,15 +908,14 @@ function MetaAccountPicker({ existingAccounts, onImport, onClose }) {
     (async () => {
       try {
         const res = await fetch("/api/meta/accounts");
-        const json = await res.json();
-        if (json.error) { setError(json.error); setLoading(false); return; }
+        const json = await parseApiResponse(res);
 
         // Filter out already-imported accounts
         const existingMetaIds = new Set(existingAccounts.filter((a) => a.metaAccountId).map((a) => a.metaAccountId));
         const filtered = (json.accounts || []).filter((a) => !existingMetaIds.has(a.metaAccountId));
         setAvailable(filtered);
       } catch (e) {
-        setError("Could not reach the server. Make sure META_ACCESS_TOKEN is set in your environment variables.");
+        setError(e.message || "Could not reach the server.");
       }
       setLoading(false);
     })();
@@ -1246,13 +1268,7 @@ export default function CRM() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ metaAccountId: account.metaAccountId, month: metaMonth }),
       });
-      const json = await res.json();
-
-      if (json.error) {
-        setToast(`Sync failed: ${json.error}`);
-        setSyncing(false);
-        return;
-      }
+      const json = await parseApiResponse(res);
 
       // Remove old campaigns for this account+month, add fresh ones
       const freshCampaigns = (json.campaigns || []).map((c) => ({
@@ -1276,7 +1292,7 @@ export default function CRM() {
 
       setToast(`Synced ${freshCampaigns.length} campaign${freshCampaigns.length === 1 ? "" : "s"} from Meta`);
     } catch (e) {
-      setToast("Sync failed — check your network connection and env variables.");
+      setToast(`Sync failed: ${e.message || "Unknown error"}`);
     }
     setSyncing(false);
   };

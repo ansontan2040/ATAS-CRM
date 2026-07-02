@@ -77,5 +77,5 @@ After Vercel finishes deploying, it gives you a URL like `https://tally-crm-abc1
 ## Notes
 
 - **Data lives in `localStorage`** — clearing your browser data or using a different device starts fresh. If you want shared multi-user data, you'll need a real backend (Postgres, Supabase, etc).
-- **Sync now** updates a local timestamp; it doesn't call the Meta/Google ads APIs (those need OAuth + server credentials).
+- **Meta sync/import** use `/api/meta/accounts` and `/api/meta/sync`, so production needs `META_ACCESS_TOKEN`, `META_BUSINESS_ID`, and optionally `META_API_VERSION` configured in Vercel.
 - **Download PDF** opens the browser's print dialog. The sidebar and topbar are hidden in print via the `@media print` styles.
