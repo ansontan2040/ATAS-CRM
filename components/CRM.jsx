@@ -26,6 +26,90 @@ const storage = {
   },
 };
 
+const LOCAL_KEYS = {
+  contacts: "crm-contacts",
+  deals: "crm-deals",
+  accounts: "crm-accounts",
+  campaigns: "crm-campaigns",
+  metaConnections: "crm-meta-connections",
+  syncMap: "crm-sync",
+};
+
+function createEmptyCrmState() {
+  return {
+    contacts: [],
+    deals: [],
+    accounts: [],
+    campaigns: [],
+    metaConnections: [],
+    syncMap: {},
+  };
+}
+
+function normalizeCrmState(value) {
+  const state = value && typeof value === "object" ? value : {};
+
+  return {
+    contacts: Array.isArray(state.contacts) ? state.contacts : [],
+    deals: Array.isArray(state.deals) ? state.deals : [],
+    accounts: Array.isArray(state.accounts) ? state.accounts : [],
+    campaigns: Array.isArray(state.campaigns) ? state.campaigns : [],
+    metaConnections: Array.isArray(state.metaConnections) ? state.metaConnections : [],
+    syncMap:
+      state.syncMap && typeof state.syncMap === "object" && !Array.isArray(state.syncMap)
+        ? state.syncMap
+        : {},
+  };
+}
+
+function hasCrmData(state) {
+  return Boolean(
+    state.contacts.length ||
+      state.deals.length ||
+      state.accounts.length ||
+      state.campaigns.length ||
+      state.metaConnections.length ||
+      Object.keys(state.syncMap).length
+  );
+}
+
+async function readLocalCrmState() {
+  const load = async (key, fallback) => {
+    try {
+      const result = await storage.get(key);
+      return result ? JSON.parse(result.value) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const [contacts, deals, accounts, campaigns, metaConnections, syncMap] = await Promise.all([
+    load(LOCAL_KEYS.contacts, []),
+    load(LOCAL_KEYS.deals, []),
+    load(LOCAL_KEYS.accounts, []),
+    load(LOCAL_KEYS.campaigns, []),
+    load(LOCAL_KEYS.metaConnections, []),
+    load(LOCAL_KEYS.syncMap, {}),
+  ]);
+
+  return normalizeCrmState({ contacts, deals, accounts, campaigns, metaConnections, syncMap });
+}
+
+async function writeLocalCrmState(state) {
+  const next = normalizeCrmState(state);
+
+  await Promise.all([
+    storage.set(LOCAL_KEYS.contacts, JSON.stringify(next.contacts)),
+    storage.set(LOCAL_KEYS.deals, JSON.stringify(next.deals)),
+    storage.set(LOCAL_KEYS.accounts, JSON.stringify(next.accounts)),
+    storage.set(LOCAL_KEYS.campaigns, JSON.stringify(next.campaigns)),
+    storage.set(LOCAL_KEYS.metaConnections, JSON.stringify(next.metaConnections)),
+    storage.set(LOCAL_KEYS.syncMap, JSON.stringify(next.syncMap)),
+  ]);
+
+  return next;
+}
+
 /* ============================================================
    tokens
 ============================================================ */
@@ -88,6 +172,11 @@ const fmtRM = (n) =>
   `RM ${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtNum = (n) => Number(n || 0).toLocaleString("en-US");
 const fmtPct = (n) => `${Number(n || 0).toFixed(2)}%`;
+const maskSecret = (value) => {
+  if (!value) return "No token saved";
+  if (value.length <= 8) return "Saved";
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+};
 const since = (ts) => {
   if (!ts) return null;
   const m = Math.max(0, Math.floor((Date.now() - ts) / 60000));
@@ -225,10 +314,58 @@ async function parseApiResponse(res) {
   }
 
   if (!res.ok) {
-    throw new Error(json.error || `Request failed: ${res.status} ${res.statusText}`);
+    const error = new Error(json.error || `Request failed: ${res.status} ${res.statusText}`);
+    if (json.code) error.code = json.code;
+    throw error;
   }
 
   return json;
+}
+
+async function fetchSharedSessionStatus() {
+  const res = await fetch("/api/auth/session", {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  return parseApiResponse(res);
+}
+
+async function loginSharedSync(password) {
+  const res = await fetch("/api/auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ password }),
+  });
+  return parseApiResponse(res);
+}
+
+async function logoutSharedSync() {
+  const res = await fetch("/api/auth/session", {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  return parseApiResponse(res);
+}
+
+async function fetchSharedCrmState() {
+  const res = await fetch("/api/crm/state", {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  const json = await parseApiResponse(res);
+  return normalizeCrmState(json.state);
+}
+
+async function saveSharedCrmState(state) {
+  const res = await fetch("/api/crm/state", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ state: normalizeCrmState(state) }),
+  });
+  const json = await parseApiResponse(res);
+  return normalizeCrmState(json.state);
 }
 
 /* ============================================================
@@ -293,13 +430,22 @@ function DealForm({ initial, contacts, onSave, onClose }) {
   );
 }
 
-function AccountForm({ initial, network, onSave, onClose }) {
+function AccountForm({ initial, network, metaConnections = [], onSave, onClose }) {
   const [name, setName] = useState(initial?.name || "");
   const [metaAccountId, setMetaAccountId] = useState(initial?.metaAccountId || "");
+  const [metaConnectionId, setMetaConnectionId] = useState(initial?.metaConnectionId || "");
   const submit = (e) => {
     e.preventDefault();
     if (!name.trim()) return;
-    onSave({ ...initial, name: name.trim(), network: initial?.network || network, metaAccountId: metaAccountId.trim() || null });
+    const linkedConnection = metaConnections.find((item) => item.id === metaConnectionId);
+    onSave({
+      ...initial,
+      name: name.trim(),
+      network: initial?.network || network,
+      metaAccountId: metaAccountId.trim() || null,
+      metaConnectionId: metaConnectionId || null,
+      metaBusinessId: linkedConnection?.businessId || null,
+    });
   };
   return (
     <form onSubmit={submit}>
@@ -307,13 +453,73 @@ function AccountForm({ initial, network, onSave, onClose }) {
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} required placeholder="e.g. Kumpulan Lebar Daun" />
       </Field>
       {network === "meta" && (
-        <Field label="Meta Ad Account ID">
-          <input value={metaAccountId} onChange={(e) => setMetaAccountId(e.target.value)} style={inputStyle} placeholder="e.g. 123456789 (from Business Manager)" />
-        </Field>
+        <>
+          <Field label="Meta Ad Account ID">
+            <input value={metaAccountId} onChange={(e) => setMetaAccountId(e.target.value)} style={inputStyle} placeholder="e.g. 123456789 (from Business Manager)" />
+          </Field>
+          <Field label="Linked Meta portfolio access">
+            <select value={metaConnectionId} onChange={(e) => setMetaConnectionId(e.target.value)} style={selectStyle}>
+              <option value="">None (use environment fallback)</option>
+              {metaConnections.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name} · {item.businessId}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {metaConnections.length === 0 && (
+            <div style={{ fontSize: 12, color: C.muted, marginTop: -6, marginBottom: 14 }}>
+              Add a Meta portfolio access record in Ad Accounts to save a system-user token for this account.
+            </div>
+          )}
+        </>
       )}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <button type="button" onClick={onClose} style={btnSecondary}>Cancel</button>
         <button type="submit" style={btnPrimary}>{initial ? "Save" : "Add account"}</button>
+      </div>
+    </form>
+  );
+}
+
+function MetaConnectionForm({ initial, onSave, onClose }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [businessId, setBusinessId] = useState(initial?.businessId || "");
+  const [accessToken, setAccessToken] = useState(initial?.accessToken || "");
+  const [apiVersion, setApiVersion] = useState(initial?.apiVersion || "");
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!name.trim() || !businessId.trim() || !accessToken.trim()) return;
+    onSave({
+      ...initial,
+      name: name.trim(),
+      businessId: businessId.trim(),
+      accessToken: accessToken.trim(),
+      apiVersion: apiVersion.trim() || null,
+    });
+  };
+
+  return (
+    <form onSubmit={submit}>
+      <Field label="Portfolio name">
+        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} required placeholder="e.g. Brand A Portfolio" />
+      </Field>
+      <Field label="Meta Business Portfolio ID">
+        <input value={businessId} onChange={(e) => setBusinessId(e.target.value)} style={inputStyle} required placeholder="e.g. 123456789012345" />
+      </Field>
+      <Field label="System User Access Token">
+        <textarea value={accessToken} onChange={(e) => setAccessToken(e.target.value)} style={{ ...inputStyle, minHeight: 110, resize: "vertical" }} required placeholder="Paste the Meta system-user token linked to the same app" />
+      </Field>
+      <Field label="Meta API version (optional)">
+        <input value={apiVersion} onChange={(e) => setApiVersion(e.target.value)} style={inputStyle} placeholder="e.g. v21.0" />
+      </Field>
+      <div style={{ fontSize: 12, color: C.muted, marginTop: -6, marginBottom: 14 }}>
+        This token is stored inside the CRM data so the linked Meta ad accounts can sync without relying on one global environment variable.
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <button type="button" onClick={onClose} style={btnSecondary}>Cancel</button>
+        <button type="submit" style={btnPrimary}>{initial ? "Save access" : "Add access"}</button>
       </div>
     </form>
   );
@@ -408,7 +614,7 @@ const NAV = [
 
 const AD_ACCOUNT_KEYS = ["ad-accounts-meta", "ad-accounts-google"];
 
-function Sidebar({ view, setView, navOpen, closeNav }) {
+function Sidebar({ view, setView, navOpen, closeNav, authConfigured, storageMode, onSharedSignOut }) {
   const [ddOpen, setDdOpen] = useState(AD_ACCOUNT_KEYS.includes(view));
   const go = (k) => { setView(k); closeNav(); };
 
@@ -487,14 +693,20 @@ function Sidebar({ view, setView, navOpen, closeNav }) {
             <div style={{ fontSize: 11, color: C.sidebarGroup, textTransform: "uppercase", letterSpacing: ".06em" }}>admin</div>
           </div>
         </div>
-        <button onClick={() => alert("In production this would sign you out.")}
+        <button onClick={() => {
+          if (authConfigured && storageMode === "shared") {
+            onSharedSignOut();
+            return;
+          }
+          alert("In production this would sign you out.");
+        }}
           style={{
             width: "100%", background: "transparent", color: C.sidebarText, border: `1px solid ${C.sidebarLine}`,
             padding: "7px 12px", borderRadius: 6, fontSize: 12.5, fontWeight: 500, cursor: "pointer",
             display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
             fontFamily: "Inter, sans-serif",
           }}>
-          <LogOut size={13} /> Sign out
+          <LogOut size={13} /> {authConfigured && storageMode === "shared" ? "Sign out of sync" : "Sign out"}
         </button>
       </div>
     </aside>
@@ -848,7 +1060,49 @@ function ReportView({
 /* ============================================================
    accounts list (per network)
 ============================================================ */
-function AccountsList({ network, accounts, campaigns, onAdd, onEdit, onDelete, onFetchMeta }) {
+function MetaConnectionsPanel({ connections, accounts, onAdd, onEdit, onDelete }) {
+  return (
+    <div style={{ ...cardStyle, marginBottom: 14, padding: 0, overflow: "hidden" }}>
+      <div style={{ padding: "16px 18px", borderBottom: `1px solid ${C.lineSoft}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14, color: C.ink }}>Meta Portfolio Access</div>
+          <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+            Save a Business Portfolio ID and system-user token here, then import or sync ad accounts from that portfolio.
+          </div>
+        </div>
+        <button onClick={onAdd} style={btnSecondary}><Plus size={14} /> Add portfolio access</button>
+      </div>
+      {connections.length === 0 ? (
+        <div style={{ padding: "22px 18px", fontSize: 13, color: C.muted }}>
+          No Meta portfolio access saved yet.
+        </div>
+      ) : (
+        connections.map((item, index) => {
+          const linkedCount = accounts.filter((account) => account.network === "meta" && account.metaConnectionId === item.id).length;
+          return (
+            <div key={item.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", padding: "14px 18px", borderBottom: index < connections.length - 1 ? `1px solid ${C.lineSoft}` : "none" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13.5, color: C.ink }}>{item.name}</div>
+                <div style={{ fontSize: 11.5, color: C.muted, marginTop: 2, fontFamily: "JetBrains Mono, monospace" }}>
+                  {item.businessId} · {maskSecret(item.accessToken)}
+                </div>
+                <div style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                  {linkedCount} linked Meta account{linkedCount === 1 ? "" : "s"}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                <button onClick={() => onEdit(item)} aria-label="Edit portfolio access" style={iconBtn}><Pencil size={15} /></button>
+                <button onClick={() => onDelete(item.id)} aria-label="Delete portfolio access" style={iconBtn}><Trash2 size={15} /></button>
+              </div>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+function AccountsList({ network, accounts, campaigns, metaConnections = [], onAdd, onEdit, onDelete, onFetchMeta }) {
   const list = accounts.filter((a) => a.network === network);
   return (
     <div>
@@ -881,6 +1135,13 @@ function AccountsList({ network, accounts, campaigns, onAdd, onEdit, onDelete, o
                     {count} campaign{count === 1 ? "" : "s"}
                     {a.metaAccountId && <span style={{ marginLeft: 8, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: C.muted }}>act_{a.metaAccountId}</span>}
                   </div>
+                  {network === "meta" && (
+                    <div style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                      {a.metaConnectionId
+                        ? `Portfolio: ${metaConnections.find((item) => item.id === a.metaConnectionId)?.name || "Saved access"}`
+                        : "Portfolio: Environment fallback"}
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: "flex", gap: 4 }}>
                   <button onClick={() => onEdit(a)} aria-label="Edit account" style={iconBtn}><Pencil size={15} /></button>
@@ -898,16 +1159,36 @@ function AccountsList({ network, accounts, campaigns, onAdd, onEdit, onDelete, o
 /* ============================================================
    meta account picker (fetches from API)
 ============================================================ */
-function MetaAccountPicker({ existingAccounts, onImport, onClose }) {
-  const [loading, setLoading] = useState(true);
+function MetaAccountPicker({ existingAccounts, connections, defaultConnectionId, onImport, onClose }) {
+  const [selectedConnectionId, setSelectedConnectionId] = useState(defaultConnectionId || connections[0]?.id || "");
+  const [loading, setLoading] = useState(Boolean(connections.length));
   const [error, setError] = useState(null);
   const [available, setAvailable] = useState([]);
   const [selected, setSelected] = useState({});
+  const activeConnection = connections.find((item) => item.id === selectedConnectionId) || null;
 
   useEffect(() => {
+    if (!activeConnection) {
+      setAvailable([]);
+      setSelected({});
+      setLoading(false);
+      return;
+    }
+
     (async () => {
+      setLoading(true);
+      setError(null);
+      setSelected({});
       try {
-        const res = await fetch("/api/meta/accounts");
+        const res = await fetch("/api/meta/accounts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            businessId: activeConnection.businessId,
+            accessToken: activeConnection.accessToken,
+            apiVersion: activeConnection.apiVersion,
+          }),
+        });
         const json = await parseApiResponse(res);
 
         // Filter out already-imported accounts
@@ -919,30 +1200,47 @@ function MetaAccountPicker({ existingAccounts, onImport, onClose }) {
       }
       setLoading(false);
     })();
-  }, [existingAccounts]);
+  }, [activeConnection, existingAccounts]);
 
   const toggle = (metaId) => setSelected((prev) => ({ ...prev, [metaId]: !prev[metaId] }));
   const selectedCount = Object.values(selected).filter(Boolean).length;
 
   const doImport = () => {
+    if (!activeConnection) return;
     const toImport = available.filter((a) => selected[a.metaAccountId]);
-    onImport(toImport);
+    onImport(toImport, activeConnection);
   };
 
   return (
     <Modal title="Import Meta Ad Accounts" onClose={onClose} wide>
+      {connections.length === 0 && (
+        <div style={{ padding: "20px", background: C.dangerBg, borderRadius: 8, color: C.danger, fontSize: 13 }}>
+          Add a Meta portfolio access record first so the CRM knows which Business Portfolio ID and token to use.
+        </div>
+      )}
+      {connections.length > 0 && (
+        <Field label="Meta portfolio access">
+          <select value={selectedConnectionId} onChange={(e) => setSelectedConnectionId(e.target.value)} style={selectStyle}>
+            {connections.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name} · {item.businessId}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       {loading && <div style={{ padding: "30px 0", textAlign: "center", color: C.muted, fontSize: 13 }}>Fetching accounts from Meta…</div>}
       {error && (
         <div style={{ padding: "20px", background: C.dangerBg, borderRadius: 8, color: C.danger, fontSize: 13, marginBottom: 14 }}>
           {error}
         </div>
       )}
-      {!loading && !error && available.length === 0 && (
+      {!loading && !error && connections.length > 0 && available.length === 0 && (
         <div style={{ padding: "30px 0", textAlign: "center", color: C.muted, fontSize: 13 }}>
-          All ad accounts from your Business Manager have already been imported.
+          All ad accounts from this Business Portfolio have already been imported.
         </div>
       )}
-      {!loading && !error && available.length > 0 && (
+      {!loading && !error && connections.length > 0 && available.length > 0 && (
         <>
           <div style={{ fontSize: 13, color: C.inkSoft, marginBottom: 14 }}>
             {available.length} account{available.length === 1 ? "" : "s"} found. Select which ones to add:
@@ -1115,6 +1413,39 @@ function StubView({ title, blurb }) {
   );
 }
 
+function SharedLoginCard({ password, setPassword, onSubmit, loading, error }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, padding: 24, fontFamily: "Inter, sans-serif" }}>
+      <div style={{ ...cardStyle, width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(15,23,42,0.12)" }}>
+        <div style={{ width: 44, height: 44, borderRadius: 10, background: C.primarySoft, color: C.primary, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+          <KeyRound size={20} />
+        </div>
+        <h1 style={{ margin: "0 0 8px", fontSize: 24, color: C.ink }}>Shared CRM Sync</h1>
+        <p style={{ margin: "0 0 18px", color: C.inkSoft, fontSize: 14, lineHeight: 1.5 }}>
+          This project is using a shared server copy of the CRM, so sign in with the shared sync password to keep all devices on the same data.
+        </p>
+        <form onSubmit={onSubmit}>
+          <Field label="Shared sync password">
+            <input
+              autoFocus
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={inputStyle}
+              placeholder="Enter the shared password"
+              required
+            />
+          </Field>
+          {error && <div style={{ marginBottom: 14, fontSize: 13, color: C.danger }}>{error}</div>}
+          <button type="submit" style={{ ...btnPrimary, width: "100%", justifyContent: "center" }} disabled={loading}>
+            {loading ? "Signing in…" : "Enter shared CRM"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================
    root
 ============================================================ */
@@ -1123,6 +1454,7 @@ export default function CRM() {
   const [deals, setDeals] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
+  const [metaConnections, setMetaConnections] = useState([]);
   const [syncMap, setSyncMap] = useState({}); // { meta: ts, google: ts }
   const [view, setView] = useState("pipeline");
   const [ready, setReady] = useState(false);
@@ -1130,30 +1462,162 @@ export default function CRM() {
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
+  const [storageMode, setStorageMode] = useState("loading");
+  const [authConfigured, setAuthConfigured] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [sharedPassword, setSharedPassword] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState("");
 
   const [metaAccountId, setMetaAccountId] = useState("");
   const [metaMonth, setMetaMonth] = useState(MONTHS[0].value);
   const [googleAccountId, setGoogleAccountId] = useState("");
   const [googleMonth, setGoogleMonth] = useState(MONTHS[0].value);
+  const sharedEnabledRef = useRef(false);
+
+  const applySnapshot = (snapshot) => {
+    const next = normalizeCrmState(snapshot);
+    setContacts(next.contacts);
+    setDeals(next.deals);
+    setAccounts(next.accounts);
+    setCampaigns(next.campaigns);
+    setMetaConnections(next.metaConnections);
+    setSyncMap(next.syncMap);
+
+    const firstMeta = next.accounts.find((item) => item.network === "meta");
+    const firstGoogle = next.accounts.find((item) => item.network === "google");
+    setMetaAccountId(firstMeta?.id || "");
+    setGoogleAccountId(firstGoogle?.id || "");
+
+    return next;
+  };
+
+  const buildSnapshot = (overrides = {}) =>
+    normalizeCrmState({
+      contacts,
+      deals,
+      accounts,
+      campaigns,
+      metaConnections,
+      syncMap,
+      ...overrides,
+    });
+
+  const persistSnapshot = async (snapshot, fallbackMessage = "Could not save — try again") => {
+    const next = normalizeCrmState(snapshot);
+    applySnapshot(next);
+
+    try {
+      if (sharedEnabledRef.current) {
+        const saved = await saveSharedCrmState(next);
+        applySnapshot(saved);
+        await writeLocalCrmState(saved);
+        setStorageMode("shared");
+        return saved;
+      }
+
+      await writeLocalCrmState(next);
+      return next;
+    } catch (error) {
+      if (error.code === "unauthorized") {
+        sharedEnabledRef.current = false;
+        setAuthRequired(true);
+        setLoginError("Your shared sync session expired. Sign in again to keep devices in sync.");
+      }
+
+      if (error.code === "storage_not_configured" || error.code === "auth_not_configured") {
+        sharedEnabledRef.current = false;
+        setStorageMode("local");
+      }
+
+      setToast(error.message || fallbackMessage);
+
+      try {
+        await writeLocalCrmState(next);
+      } catch {
+        setToast("Could not save a local backup on this device.");
+      }
+
+      return next;
+    }
+  };
+
+  const initializeCrm = async () => {
+    const localState = await readLocalCrmState();
+
+    try {
+      const session = await fetchSharedSessionStatus();
+      setAuthConfigured(Boolean(session.configured));
+
+      if (!session.configured) {
+        sharedEnabledRef.current = false;
+        setAuthRequired(false);
+        setStorageMode("local");
+        applySnapshot(localState);
+        setReady(true);
+        return;
+      }
+
+      if (!session.authenticated) {
+        sharedEnabledRef.current = false;
+        setAuthRequired(true);
+        setStorageMode("shared");
+        setReady(true);
+        return;
+      }
+
+      sharedEnabledRef.current = true;
+      setAuthRequired(false);
+      setStorageMode("shared");
+      setLoginError("");
+
+      const remoteState = await fetchSharedCrmState();
+      let startingState = remoteState;
+
+      if (!hasCrmData(remoteState) && hasCrmData(localState)) {
+        startingState = await saveSharedCrmState(localState);
+        setToast("Shared sync is ready. Existing data from this browser was uploaded.");
+      }
+
+      await writeLocalCrmState(startingState);
+      applySnapshot(startingState);
+      setReady(true);
+    } catch (error) {
+      sharedEnabledRef.current = false;
+
+      if (error.code === "unauthorized") {
+        setAuthConfigured(true);
+        setAuthRequired(true);
+        setStorageMode("shared");
+        setLoginError("Please sign in with the shared sync password.");
+        setReady(true);
+        return;
+      }
+
+      setAuthRequired(false);
+      setStorageMode("local");
+      applySnapshot(localState);
+      setReady(true);
+
+      if (error.code === "storage_not_configured" || error.code === "auth_not_configured") {
+        setToast("Shared sync is not configured yet. This device is using local browser data.");
+      } else {
+        setToast("Could not reach shared sync. This device is using local browser data.");
+      }
+    }
+  };
 
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
-      const load = async (k, fallback) => {
-        try { const r = await storage.get(k); return r ? JSON.parse(r.value) : fallback; }
-        catch { return fallback; }
-      };
-      const [c, d, a, cp, s] = await Promise.all([
-        load("crm-contacts", []), load("crm-deals", []),
-        load("crm-accounts", []), load("crm-campaigns", []),
-        load("crm-sync", {}),
-      ]);
-      setContacts(c); setDeals(d); setAccounts(a); setCampaigns(cp); setSyncMap(s);
-      const firstMeta = a.find((x) => x.network === "meta");
-      const firstGoogle = a.find((x) => x.network === "google");
-      if (firstMeta) setMetaAccountId(firstMeta.id);
-      if (firstGoogle) setGoogleAccountId(firstGoogle.id);
-      setReady(true);
+      await initializeCrm();
+      if (cancelled) return;
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1169,28 +1633,31 @@ export default function CRM() {
     if (gList.length && !gList.find((a) => a.id === googleAccountId)) setGoogleAccountId(gList[0].id);
   }, [accounts, metaAccountId, googleAccountId]);
 
-  const persist = async (key, value, setter) => {
-    setter(value);
-    try { await storage.set(key, JSON.stringify(value)); }
-    catch { setToast("Could not save — try again"); }
-  };
-
   // contacts
   const saveContact = (data) => {
     const updated = data.id ? contacts.map((c) => c.id === data.id ? { ...c, ...data } : c)
                             : [...contacts, { ...data, id: uid(), createdAt: Date.now() }];
-    persist("crm-contacts", updated, setContacts); setModal(null);
+    persistSnapshot(buildSnapshot({ contacts: updated }));
+    setModal(null);
   };
-  const deleteContact = (id) => { if (window.confirm("Delete this contact?")) persist("crm-contacts", contacts.filter((c) => c.id !== id), setContacts); };
+  const deleteContact = (id) => {
+    if (!window.confirm("Delete this contact?")) return;
+    persistSnapshot(buildSnapshot({ contacts: contacts.filter((c) => c.id !== id) }));
+  };
 
   // deals
   const saveDeal = (data) => {
     const updated = data.id ? deals.map((d) => d.id === data.id ? { ...d, ...data } : d)
                             : [...deals, { ...data, id: uid(), createdAt: Date.now() }];
-    persist("crm-deals", updated, setDeals); setModal(null);
+    persistSnapshot(buildSnapshot({ deals: updated }));
+    setModal(null);
   };
-  const deleteDeal = (id) => { if (window.confirm("Delete this deal?")) persist("crm-deals", deals.filter((d) => d.id !== id), setDeals); };
-  const moveDeal = (id, stage) => persist("crm-deals", deals.map((d) => d.id === id ? { ...d, stage } : d), setDeals);
+  const deleteDeal = (id) => {
+    if (!window.confirm("Delete this deal?")) return;
+    persistSnapshot(buildSnapshot({ deals: deals.filter((d) => d.id !== id) }));
+  };
+  const moveDeal = (id, stage) =>
+    persistSnapshot(buildSnapshot({ deals: deals.map((d) => d.id === id ? { ...d, stage } : d) }));
 
   // accounts
   const saveAccount = (data) => {
@@ -1202,38 +1669,90 @@ export default function CRM() {
       if (newAcc.network === "meta" && !metaAccountId) setMetaAccountId(newAcc.id);
       if (newAcc.network === "google" && !googleAccountId) setGoogleAccountId(newAcc.id);
     }
-    persist("crm-accounts", updated, setAccounts); setModal(null);
+    persistSnapshot(buildSnapshot({ accounts: updated }));
+    setModal(null);
+  };
+  const saveMetaConnection = (data) => {
+    const saved = data.id
+      ? { ...data }
+      : { ...data, id: uid(), createdAt: Date.now() };
+    const nextConnections = data.id
+      ? metaConnections.map((item) => item.id === data.id ? saved : item)
+      : [...metaConnections, saved];
+    const nextAccounts = data.id
+      ? accounts.map((account) => (
+          account.network === "meta" && account.metaConnectionId === data.id
+            ? { ...account, metaBusinessId: saved.businessId }
+            : account
+        ))
+      : accounts;
+    persistSnapshot(buildSnapshot({
+      accounts: nextAccounts,
+      metaConnections: nextConnections,
+    }));
+    setModal(null);
   };
   const deleteAccount = (id) => {
     const linked = campaigns.filter((c) => c.accountId === id).length;
     const msg = linked ? `Delete this account and its ${linked} campaign${linked === 1 ? "" : "s"}?` : "Delete this account?";
     if (!window.confirm(msg)) return;
-    persist("crm-accounts", accounts.filter((a) => a.id !== id), setAccounts);
-    if (linked) persist("crm-campaigns", campaigns.filter((c) => c.accountId !== id), setCampaigns);
+    const nextAccounts = accounts.filter((a) => a.id !== id);
+    const nextCampaigns = linked ? campaigns.filter((c) => c.accountId !== id) : campaigns;
+    persistSnapshot(buildSnapshot({ accounts: nextAccounts, campaigns: nextCampaigns }));
+  };
+  const deleteMetaConnection = (id) => {
+    const linkedCount = accounts.filter((account) => account.network === "meta" && account.metaConnectionId === id).length;
+    const msg = linkedCount
+      ? `Delete this Meta portfolio access? ${linkedCount} linked Meta account${linkedCount === 1 ? "" : "s"} will stop using its saved token until you reassign it.`
+      : "Delete this Meta portfolio access?";
+    if (!window.confirm(msg)) return;
+
+    const nextConnections = metaConnections.filter((item) => item.id !== id);
+    const nextAccounts = linkedCount
+      ? accounts.map((account) => (
+          account.network === "meta" && account.metaConnectionId === id
+            ? { ...account, metaConnectionId: null }
+            : account
+        ))
+      : accounts;
+
+    persistSnapshot(buildSnapshot({
+      accounts: nextAccounts,
+      metaConnections: nextConnections,
+    }));
   };
 
   // campaigns
   const saveCampaign = (data) => {
     const updated = data.id ? campaigns.map((c) => c.id === data.id ? { ...c, ...data } : c)
                             : [...campaigns, { ...data, id: uid(), createdAt: Date.now() }];
-    persist("crm-campaigns", updated, setCampaigns); setModal(null);
+    persistSnapshot(buildSnapshot({ campaigns: updated }));
+    setModal(null);
   };
-  const deleteCampaign = (id) => { if (window.confirm("Delete this campaign?")) persist("crm-campaigns", campaigns.filter((c) => c.id !== id), setCampaigns); };
+  const deleteCampaign = (id) => {
+    if (!window.confirm("Delete this campaign?")) return;
+    persistSnapshot(buildSnapshot({ campaigns: campaigns.filter((c) => c.id !== id) }));
+  };
 
   // ── Meta account import ──
   const [showMetaPicker, setShowMetaPicker] = useState(false);
 
-  const importMetaAccounts = (metaAccounts) => {
+  const importMetaAccounts = (metaAccounts, connection) => {
     const newAccounts = metaAccounts.map((a) => ({
       id: uid(),
       name: a.name,
       network: "meta",
       metaAccountId: a.metaAccountId,
+      metaConnectionId: connection?.id || null,
+      metaBusinessId: connection?.businessId || null,
+      metaApiVersion: connection?.apiVersion || null,
+      actId: a.actId || null,
       currency: a.currency,
+      timezone: a.timezone || "",
       createdAt: Date.now(),
     }));
     const updated = [...accounts, ...newAccounts];
-    persist("crm-accounts", updated, setAccounts);
+    persistSnapshot(buildSnapshot({ accounts: updated }));
     if (!metaAccountId && newAccounts.length) setMetaAccountId(newAccounts[0].id);
     setShowMetaPicker(false);
     setToast(`Imported ${newAccounts.length} account${newAccounts.length === 1 ? "" : "s"} from Meta`);
@@ -1241,12 +1760,19 @@ export default function CRM() {
 
   // ── Sync: calls Meta Marketing API via our backend route ──
   const [syncing, setSyncing] = useState(false);
+  const openMetaAccountPicker = () => {
+    if (!metaConnections.length) {
+      setModal({ type: "meta-connection", data: null });
+      return;
+    }
+    setShowMetaPicker(true);
+  };
 
   const doSync = async (network, accountIdOverride) => {
     if (network === "google") {
       // Google sync not yet wired — placeholder
       const updated = { ...syncMap, google: Date.now() };
-      persist("crm-sync", updated, setSyncMap);
+      await persistSnapshot(buildSnapshot({ syncMap: updated }));
       setToast("Google sync is not connected yet — add campaigns manually for now.");
       return;
     }
@@ -1254,6 +1780,7 @@ export default function CRM() {
     // Find the selected account and its metaAccountId
     const selectedId = accountIdOverride || metaAccountId;
     const account = accounts.find((a) => a.id === selectedId);
+    const connection = metaConnections.find((item) => item.id === account?.metaConnectionId);
     if (!account?.metaAccountId) {
       setToast("This account has no Meta Ad Account ID — edit it and add one, or re-import from Meta.");
       return;
@@ -1266,7 +1793,12 @@ export default function CRM() {
       const res = await fetch("/api/meta/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ metaAccountId: account.metaAccountId, month: metaMonth }),
+        body: JSON.stringify({
+          metaAccountId: account.metaAccountId,
+          month: metaMonth,
+          accessToken: connection?.accessToken || null,
+          apiVersion: connection?.apiVersion || account?.metaApiVersion || null,
+        }),
       });
       const json = await parseApiResponse(res);
 
@@ -1284,17 +1816,49 @@ export default function CRM() {
         (c) => !(c.accountId === selectedId && c.month === metaMonth && c.network === "meta")
       );
       const updatedCampaigns = [...otherCampaigns, ...freshCampaigns];
-      persist("crm-campaigns", updatedCampaigns, setCampaigns);
 
       // Update sync timestamp
       const updatedSync = { ...syncMap, meta: Date.now() };
-      persist("crm-sync", updatedSync, setSyncMap);
+      await persistSnapshot(buildSnapshot({
+        campaigns: updatedCampaigns,
+        syncMap: updatedSync,
+      }), "Could not save the synced CRM data.");
 
       setToast(`Synced ${freshCampaigns.length} campaign${freshCampaigns.length === 1 ? "" : "s"} from Meta`);
     } catch (e) {
       setToast(`Sync failed: ${e.message || "Unknown error"}`);
     }
     setSyncing(false);
+  };
+
+  const handleSharedLogin = async (e) => {
+    e.preventDefault();
+    setLoggingIn(true);
+    setLoginError("");
+
+    try {
+      await loginSharedSync(sharedPassword);
+      setSharedPassword("");
+      setReady(false);
+      await initializeCrm();
+    } catch (error) {
+      setLoginError(error.message || "Could not sign in to shared sync.");
+    }
+
+    setLoggingIn(false);
+  };
+
+  const handleSharedLogout = async () => {
+    try {
+      await logoutSharedSync();
+    } catch {
+      // Ignore logout errors and still lock the shared view locally.
+    }
+
+    sharedEnabledRef.current = false;
+    setAuthRequired(true);
+    setLoginError("");
+    setReady(true);
   };
 
   const doDownload = (network) => {
@@ -1307,6 +1871,18 @@ export default function CRM() {
       <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontFamily: "Inter, sans-serif", background: C.bg }}>
         Loading…
       </div>
+    );
+  }
+
+  if (authRequired) {
+    return (
+      <SharedLoginCard
+        password={sharedPassword}
+        setPassword={setSharedPassword}
+        onSubmit={handleSharedLogin}
+        loading={loggingIn}
+        error={loginError}
+      />
     );
   }
 
@@ -1351,7 +1927,15 @@ export default function CRM() {
           .tally-main { padding: 0 !important; max-width: none !important; }
         }
       `}</style>
-      <Sidebar view={view} setView={setView} navOpen={navOpen} closeNav={() => setNavOpen(false)} />
+      <Sidebar
+        view={view}
+        setView={setView}
+        navOpen={navOpen}
+        closeNav={() => setNavOpen(false)}
+        authConfigured={authConfigured}
+        storageMode={storageMode}
+        onSharedSignOut={handleSharedLogout}
+      />
       <div className="tally-overlay" onClick={() => setNavOpen(false)} />
       <main className="tally-main" style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <header className="tally-topbar" style={{
@@ -1363,6 +1947,18 @@ export default function CRM() {
             <Menu size={20} />
           </button>
           <div style={{ fontWeight: 600, fontSize: 15, color: C.ink, flex: 1 }}>{PAGE[view]}</div>
+          <div style={{
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: ".04em",
+            textTransform: "uppercase",
+            borderRadius: 999,
+            padding: "5px 10px",
+            background: storageMode === "shared" ? C.successBg : "rgba(245,158,11,.12)",
+            color: storageMode === "shared" ? C.success : C.amber,
+          }}>
+            {storageMode === "shared" ? "Shared Sync On" : "Device Only"}
+          </div>
         </header>
 
         <div style={{ flex: 1, padding: "20px 24px", maxWidth: 1280, width: "100%", margin: "0 auto", alignSelf: "stretch" }}>
@@ -1418,11 +2014,20 @@ export default function CRM() {
           {view === "client-logins" && <StubView title="Client logins" blurb="Per-client portal access lives here in production. Requires an auth system and per-tenant scopes." />}
 
           {view === "ad-accounts-meta" && (
-            <AccountsList network="meta" accounts={accounts} campaigns={campaigns}
-              onAdd={() => setModal({ type: "account", data: null, network: "meta" })}
-              onEdit={(a) => setModal({ type: "account", data: a, network: a.network })}
-              onDelete={deleteAccount}
-              onFetchMeta={() => setShowMetaPicker(true)} />
+            <>
+              <MetaConnectionsPanel
+                connections={metaConnections}
+                accounts={accounts}
+                onAdd={() => setModal({ type: "meta-connection", data: null })}
+                onEdit={(connection) => setModal({ type: "meta-connection", data: connection })}
+                onDelete={deleteMetaConnection}
+              />
+              <AccountsList network="meta" accounts={accounts} campaigns={campaigns} metaConnections={metaConnections}
+                onAdd={() => setModal({ type: "account", data: null, network: "meta" })}
+                onEdit={(a) => setModal({ type: "account", data: a, network: a.network })}
+                onDelete={deleteAccount}
+                onFetchMeta={openMetaAccountPicker} />
+            </>
           )}
           {view === "ad-accounts-google" && (
             <AccountsList network="google" accounts={accounts} campaigns={campaigns}
@@ -1451,7 +2056,12 @@ export default function CRM() {
       )}
       {modal?.type === "account" && (
         <Modal title={modal.data ? "Edit account" : "Add ad account"} onClose={() => setModal(null)}>
-          <AccountForm initial={modal.data} network={modal.network} onSave={saveAccount} onClose={() => setModal(null)} />
+          <AccountForm initial={modal.data} network={modal.network} metaConnections={metaConnections} onSave={saveAccount} onClose={() => setModal(null)} />
+        </Modal>
+      )}
+      {modal?.type === "meta-connection" && (
+        <Modal title={modal.data ? "Edit Meta portfolio access" : "Add Meta portfolio access"} onClose={() => setModal(null)}>
+          <MetaConnectionForm initial={modal.data} onSave={saveMetaConnection} onClose={() => setModal(null)} />
         </Modal>
       )}
       {modal?.type === "campaign" && (
@@ -1468,6 +2078,8 @@ export default function CRM() {
       {showMetaPicker && (
         <MetaAccountPicker
           existingAccounts={accounts}
+          connections={metaConnections}
+          defaultConnectionId={accounts.find((item) => item.id === metaAccountId)?.metaConnectionId || metaConnections[0]?.id || ""}
           onImport={importMetaAccounts}
           onClose={() => setShowMetaPicker(false)}
         />
