@@ -70,7 +70,7 @@ const STAGE_COLOR = {
 
 function buildMonths() {
   const out = [];
-  const base = new Date(2026, 5, 1);
+  const base = new Date();
   for (let i = 0; i < 12; i++) {
     const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
     const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
