@@ -1484,10 +1484,12 @@ export default function CRM() {
     setMetaConnections(next.metaConnections);
     setSyncMap(next.syncMap);
 
+    const keptMeta = next.accounts.find((item) => item.network === "meta" && item.id === metaAccountId);
+    const keptGoogle = next.accounts.find((item) => item.network === "google" && item.id === googleAccountId);
     const firstMeta = next.accounts.find((item) => item.network === "meta");
     const firstGoogle = next.accounts.find((item) => item.network === "google");
-    setMetaAccountId(firstMeta?.id || "");
-    setGoogleAccountId(firstGoogle?.id || "");
+    setMetaAccountId(keptMeta?.id || firstMeta?.id || "");
+    setGoogleAccountId(keptGoogle?.id || firstGoogle?.id || "");
 
     return next;
   };
