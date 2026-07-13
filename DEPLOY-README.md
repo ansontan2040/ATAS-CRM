@@ -1,6 +1,6 @@
 # Tally CRM
 
-A self-contained CRM prototype with sales pipeline, contacts, and a Meta/Google ads reporting dashboard. Data is stored in the browser via `localStorage` — each browser gets its own data, nothing is sent to a server.
+A CRM prototype with sales pipeline, contacts, and a Meta/Google ads reporting dashboard. It can use a shared server copy of the CRM data for cross-device sync, while `localStorage` stays as a fallback and migration source.
 
 Built with Next.js 14 (App Router), React 18, recharts, and lucide-react.
 
@@ -74,8 +74,34 @@ After Vercel finishes deploying, it gives you a URL like `https://tally-crm-abc1
 
 ---
 
+## Shared Sync Setup
+
+To make contacts, deals, accounts, campaigns, and sync timestamps match across devices, configure these environment variables in Vercel:
+
+- `BLOB_READ_WRITE_TOKEN`
+- `CRM_SHARED_PASSWORD`
+- `CRM_SESSION_SECRET`
+
+What they do:
+
+- `BLOB_READ_WRITE_TOKEN`: lets the app store one shared CRM state file in Vercel Blob
+- `CRM_SHARED_PASSWORD`: the password your team enters to unlock the shared CRM
+- `CRM_SESSION_SECRET`: signs the secure session cookie used after login
+
+How to enable it:
+
+1. Add a **Blob** store to the Vercel project.
+2. Confirm Vercel adds `BLOB_READ_WRITE_TOKEN`.
+3. Add `CRM_SHARED_PASSWORD` and `CRM_SESSION_SECRET` to the Production environment.
+4. Redeploy production.
+5. Open the site and sign in with the shared sync password.
+
+If the shared store is still empty but this browser already has local CRM data, the app will upload that local data into the shared server copy on first sign-in.
+
+---
+
 ## Notes
 
-- **Data lives in `localStorage`** — clearing your browser data or using a different device starts fresh. If you want shared multi-user data, you'll need a real backend (Postgres, Supabase, etc).
+- **Shared sync uses Vercel Blob** when the required env vars are configured. Without that setup, the app falls back to `localStorage`, so each browser keeps its own separate copy.
 - **Meta sync/import** use `/api/meta/accounts` and `/api/meta/sync`, so production needs `META_ACCESS_TOKEN`, `META_BUSINESS_ID`, and optionally `META_API_VERSION` configured in Vercel.
 - **Download PDF** opens the browser's print dialog. The sidebar and topbar are hidden in print via the `@media print` styles.

@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 
-import { hasSharedSession, isCrmAuthConfigured } from "@/lib/crm-auth";
+import {
+  hasSharedSession,
+  isCrmAuthConfigured,
+  readPortalSession,
+} from "@/lib/crm-auth";
 import {
   isSharedStorageConfigured,
   normalizeCrmState,
@@ -38,10 +42,52 @@ function notConfigured() {
 function unauthorized() {
   return NextResponse.json(
     {
-      error: "Please sign in to access shared CRM sync.",
+      error: "Please sign in to access the CRM portal.",
       code: "unauthorized",
     },
     { status: 401 }
+  );
+}
+
+function forbidden() {
+  return NextResponse.json(
+    {
+      error: "Only admin users can change CRM data.",
+      code: "forbidden",
+    },
+    { status: 403 }
+  );
+}
+
+function filterStateForClient(state, user) {
+  const linkedClient = state.clients.find((item) => item.id === user.clientId);
+  const allowedIds = new Set(linkedClient?.accountIds || []);
+
+  return normalizeCrmState({
+    contacts: [],
+    deals: [],
+    accounts: state.accounts.filter((item) => allowedIds.has(item.id)),
+    campaigns: state.campaigns.filter((item) => allowedIds.has(item.accountId)),
+    metaConnections: [],
+    clients: linkedClient ? [linkedClient] : [],
+    clientUsers: [],
+    syncMap: state.syncMap,
+  });
+}
+
+function resolvePortalUser(state) {
+  const session = readPortalSession(cookies());
+  if (!session) {
+    return null;
+  }
+
+  return (
+    state.clientUsers.find(
+      (item) =>
+        item.id === session.userId &&
+        item.role === session.role &&
+        item.isActive !== false
+    ) || null
   );
 }
 
@@ -51,13 +97,18 @@ export async function GET() {
     return configError;
   }
 
-  if (!hasSharedSession(cookies())) {
-    return unauthorized();
-  }
-
   try {
     const { state } = await readCrmState();
-    return NextResponse.json({ state });
+    const portalUser = resolvePortalUser(state);
+    const isSharedAdmin = hasSharedSession(cookies());
+
+    if (!isSharedAdmin && !portalUser) {
+      return unauthorized();
+    }
+
+    return NextResponse.json({
+      state: portalUser?.role === "client" ? filterStateForClient(state, portalUser) : state,
+    });
   } catch (error) {
     return NextResponse.json(
       {
@@ -74,10 +125,6 @@ export async function PUT(request) {
     return configError;
   }
 
-  if (!hasSharedSession(cookies())) {
-    return unauthorized();
-  }
-
   let body;
   try {
     body = await request.json();
@@ -86,6 +133,18 @@ export async function PUT(request) {
   }
 
   try {
+    const { state } = await readCrmState();
+    const portalUser = resolvePortalUser(state);
+    const isSharedAdmin = hasSharedSession(cookies());
+
+    if (!isSharedAdmin && !portalUser) {
+      return unauthorized();
+    }
+
+    if (portalUser?.role === "client") {
+      return forbidden();
+    }
+
     const savedState = await writeCrmState(normalizeCrmState(body?.state));
     return NextResponse.json({ state: savedState });
   } catch (error) {
