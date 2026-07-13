@@ -26,6 +26,173 @@ const storage = {
   },
 };
 
+const LOCAL_KEYS = {
+  contacts: "crm-contacts",
+  deals: "crm-deals",
+  accounts: "crm-accounts",
+  campaigns: "crm-campaigns",
+  metaConnections: "crm-meta-connections",
+  clients: "crm-clients",
+  clientUsers: "crm-client-users",
+  syncMap: "crm-sync",
+};
+const LOCAL_PORTAL_SESSION_KEY = "crm-portal-local-session";
+const DEFAULT_ADMIN_USER_ID = "portal-admin";
+const DEFAULT_ADMIN_PASSWORD_HASH = "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9";
+
+function normalizeClient(value) {
+  const client = value && typeof value === "object" ? value : {};
+
+  return {
+    id: typeof client.id === "string" && client.id.trim() ? client.id : null,
+    name: typeof client.name === "string" ? client.name.trim() : "",
+    company: typeof client.company === "string" ? client.company.trim() : "",
+    contactName: typeof client.contactName === "string" ? client.contactName.trim() : "",
+    contactEmail: typeof client.contactEmail === "string" ? client.contactEmail.trim() : "",
+    notes: typeof client.notes === "string" ? client.notes : "",
+    accountIds: Array.isArray(client.accountIds)
+      ? [...new Set(client.accountIds.filter((item) => typeof item === "string" && item.trim()))]
+      : [],
+    createdAt: typeof client.createdAt === "number" ? client.createdAt : Date.now(),
+  };
+}
+
+function normalizeClientUser(value) {
+  const user = value && typeof value === "object" ? value : {};
+  const role = user.role === "client" ? "client" : "admin";
+
+  return {
+    id: typeof user.id === "string" && user.id.trim() ? user.id : null,
+    role,
+    clientId: role === "client" && typeof user.clientId === "string" && user.clientId.trim() ? user.clientId : null,
+    displayName: typeof user.displayName === "string" ? user.displayName.trim() : "",
+    username: typeof user.username === "string" ? user.username.trim().toLowerCase() : "",
+    passwordHash: typeof user.passwordHash === "string" ? user.passwordHash : "",
+    isActive: user.isActive !== false,
+    isBuiltIn: Boolean(user.isBuiltIn),
+    createdAt: typeof user.createdAt === "number" ? user.createdAt : Date.now(),
+  };
+}
+
+function ensureAdminUser(list) {
+  const users = Array.isArray(list) ? list.map(normalizeClientUser).filter((item) => item.id && item.username) : [];
+  const adminIndex = users.findIndex((item) => item.id === DEFAULT_ADMIN_USER_ID);
+  const defaultAdmin = {
+    id: DEFAULT_ADMIN_USER_ID,
+    role: "admin",
+    clientId: null,
+    displayName: "Workspace Admin",
+    username: "admin",
+    passwordHash: DEFAULT_ADMIN_PASSWORD_HASH,
+    isActive: true,
+    isBuiltIn: true,
+    createdAt: 0,
+  };
+
+  if (adminIndex === -1) {
+    return [defaultAdmin, ...users];
+  }
+
+  const existingAdmin = users[adminIndex];
+  const nextAdmin = {
+    ...defaultAdmin,
+    ...existingAdmin,
+    role: "admin",
+    clientId: null,
+    username: existingAdmin.username || defaultAdmin.username,
+    passwordHash: existingAdmin.passwordHash || defaultAdmin.passwordHash,
+    isActive: true,
+    isBuiltIn: true,
+  };
+
+  return users.map((item, index) => (index === adminIndex ? nextAdmin : item));
+}
+
+function createEmptyCrmState() {
+  return {
+    contacts: [],
+    deals: [],
+    accounts: [],
+    campaigns: [],
+    metaConnections: [],
+    clients: [],
+    clientUsers: ensureAdminUser([]),
+    syncMap: {},
+  };
+}
+
+function normalizeCrmState(value) {
+  const state = value && typeof value === "object" ? value : {};
+
+  return {
+    contacts: Array.isArray(state.contacts) ? state.contacts : [],
+    deals: Array.isArray(state.deals) ? state.deals : [],
+    accounts: Array.isArray(state.accounts) ? state.accounts : [],
+    campaigns: Array.isArray(state.campaigns) ? state.campaigns : [],
+    metaConnections: Array.isArray(state.metaConnections) ? state.metaConnections : [],
+    clients: Array.isArray(state.clients) ? state.clients.map(normalizeClient).filter((item) => item.id && item.name) : [],
+    clientUsers: ensureAdminUser(state.clientUsers),
+    syncMap:
+      state.syncMap && typeof state.syncMap === "object" && !Array.isArray(state.syncMap)
+        ? state.syncMap
+        : {},
+  };
+}
+
+function hasCrmData(state) {
+  return Boolean(
+    state.contacts.length ||
+      state.deals.length ||
+      state.accounts.length ||
+      state.campaigns.length ||
+      state.metaConnections.length ||
+      state.clients.length ||
+      state.clientUsers.some((item) => !item.isBuiltIn) ||
+      Object.keys(state.syncMap).length
+  );
+}
+
+async function readLocalCrmState() {
+  const load = async (key, fallback) => {
+    try {
+      const result = await storage.get(key);
+      return result ? JSON.parse(result.value) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const [contacts, deals, accounts, campaigns, metaConnections, clients, clientUsers, syncMap] = await Promise.all([
+    load(LOCAL_KEYS.contacts, []),
+    load(LOCAL_KEYS.deals, []),
+    load(LOCAL_KEYS.accounts, []),
+    load(LOCAL_KEYS.campaigns, []),
+    load(LOCAL_KEYS.metaConnections, []),
+    load(LOCAL_KEYS.clients, []),
+    load(LOCAL_KEYS.clientUsers, []),
+    load(LOCAL_KEYS.syncMap, {}),
+  ]);
+
+  return normalizeCrmState({ contacts, deals, accounts, campaigns, metaConnections, clients, clientUsers, syncMap });
+}
+
+async function writeLocalCrmState(state) {
+  const next = normalizeCrmState(state);
+
+  await Promise.all([
+    storage.set(LOCAL_KEYS.contacts, JSON.stringify(next.contacts)),
+    storage.set(LOCAL_KEYS.deals, JSON.stringify(next.deals)),
+    storage.set(LOCAL_KEYS.accounts, JSON.stringify(next.accounts)),
+    storage.set(LOCAL_KEYS.campaigns, JSON.stringify(next.campaigns)),
+    storage.set(LOCAL_KEYS.metaConnections, JSON.stringify(next.metaConnections)),
+    storage.set(LOCAL_KEYS.clients, JSON.stringify(next.clients)),
+    storage.set(LOCAL_KEYS.clientUsers, JSON.stringify(next.clientUsers)),
+    storage.set(LOCAL_KEYS.syncMap, JSON.stringify(next.syncMap)),
+  ]);
+
+  return next;
+}
+
 /* ============================================================
    tokens
 ============================================================ */
@@ -70,7 +237,7 @@ const STAGE_COLOR = {
 
 function buildMonths() {
   const out = [];
-  const base = new Date(2026, 5, 1);
+  const base = new Date();
   for (let i = 0; i < 12; i++) {
     const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
     const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -88,6 +255,11 @@ const fmtRM = (n) =>
   `RM ${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtNum = (n) => Number(n || 0).toLocaleString("en-US");
 const fmtPct = (n) => `${Number(n || 0).toFixed(2)}%`;
+const maskSecret = (value) => {
+  if (!value) return "No token saved";
+  if (value.length <= 8) return "Saved";
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+};
 const since = (ts) => {
   if (!ts) return null;
   const m = Math.max(0, Math.floor((Date.now() - ts) / 60000));
@@ -225,10 +397,126 @@ async function parseApiResponse(res) {
   }
 
   if (!res.ok) {
-    throw new Error(json.error || `Request failed: ${res.status} ${res.statusText}`);
+    const error = new Error(json.error || `Request failed: ${res.status} ${res.statusText}`);
+    if (json.code) error.code = json.code;
+    throw error;
   }
 
   return json;
+}
+
+async function fetchSharedSessionStatus() {
+  const res = await fetch("/api/auth/session", {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  return parseApiResponse(res);
+}
+
+async function loginSharedSync(password) {
+  const res = await fetch("/api/auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ password }),
+  });
+  return parseApiResponse(res);
+}
+
+async function logoutSharedSync() {
+  const res = await fetch("/api/auth/session", {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  return parseApiResponse(res);
+}
+
+async function fetchSharedCrmState() {
+  const res = await fetch("/api/crm/state", {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  const json = await parseApiResponse(res);
+  return normalizeCrmState(json.state);
+}
+
+async function saveSharedCrmState(state) {
+  const res = await fetch("/api/crm/state", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ state: normalizeCrmState(state) }),
+  });
+  const json = await parseApiResponse(res);
+  return normalizeCrmState(json.state);
+}
+
+async function hashPortalPassword(password) {
+  if (typeof window === "undefined" || !window.crypto?.subtle) {
+    throw new Error("This browser does not support secure password hashing.");
+  }
+
+  const data = new TextEncoder().encode(String(password || ""));
+  const digest = await window.crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest))
+    .map((item) => item.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function summarizePortalUser(user, clients = []) {
+  const linkedClient = clients.find((item) => item.id === user?.clientId);
+
+  return {
+    id: user?.id || "",
+    role: user?.role === "client" ? "client" : "admin",
+    clientId: user?.clientId || null,
+    clientName: linkedClient?.name || "",
+    displayName: user?.displayName || user?.username || "User",
+    username: user?.username || "",
+  };
+}
+
+async function readLocalPortalSession() {
+  try {
+    const result = await storage.get(LOCAL_PORTAL_SESSION_KEY);
+    return result ? JSON.parse(result.value) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeLocalPortalSession(session) {
+  await storage.set(LOCAL_PORTAL_SESSION_KEY, JSON.stringify(session));
+}
+
+async function clearLocalPortalSession() {
+  await storage.set(LOCAL_PORTAL_SESSION_KEY, JSON.stringify(null));
+}
+
+async function fetchPortalSessionStatus() {
+  const res = await fetch("/api/portal/session", {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  return parseApiResponse(res);
+}
+
+async function loginPortal(username, password) {
+  const res = await fetch("/api/portal/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ username, password }),
+  });
+  return parseApiResponse(res);
+}
+
+async function logoutPortal() {
+  const res = await fetch("/api/portal/session", {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  return parseApiResponse(res);
 }
 
 /* ============================================================
@@ -293,13 +581,22 @@ function DealForm({ initial, contacts, onSave, onClose }) {
   );
 }
 
-function AccountForm({ initial, network, onSave, onClose }) {
+function AccountForm({ initial, network, metaConnections = [], onSave, onClose }) {
   const [name, setName] = useState(initial?.name || "");
   const [metaAccountId, setMetaAccountId] = useState(initial?.metaAccountId || "");
+  const [metaConnectionId, setMetaConnectionId] = useState(initial?.metaConnectionId || "");
   const submit = (e) => {
     e.preventDefault();
     if (!name.trim()) return;
-    onSave({ ...initial, name: name.trim(), network: initial?.network || network, metaAccountId: metaAccountId.trim() || null });
+    const linkedConnection = metaConnections.find((item) => item.id === metaConnectionId);
+    onSave({
+      ...initial,
+      name: name.trim(),
+      network: initial?.network || network,
+      metaAccountId: metaAccountId.trim() || null,
+      metaConnectionId: metaConnectionId || null,
+      metaBusinessId: linkedConnection?.businessId || null,
+    });
   };
   return (
     <form onSubmit={submit}>
@@ -307,13 +604,73 @@ function AccountForm({ initial, network, onSave, onClose }) {
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} required placeholder="e.g. Kumpulan Lebar Daun" />
       </Field>
       {network === "meta" && (
-        <Field label="Meta Ad Account ID">
-          <input value={metaAccountId} onChange={(e) => setMetaAccountId(e.target.value)} style={inputStyle} placeholder="e.g. 123456789 (from Business Manager)" />
-        </Field>
+        <>
+          <Field label="Meta Ad Account ID">
+            <input value={metaAccountId} onChange={(e) => setMetaAccountId(e.target.value)} style={inputStyle} placeholder="e.g. 123456789 (from Business Manager)" />
+          </Field>
+          <Field label="Linked Meta portfolio access">
+            <select value={metaConnectionId} onChange={(e) => setMetaConnectionId(e.target.value)} style={selectStyle}>
+              <option value="">None (use environment fallback)</option>
+              {metaConnections.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name} · {item.businessId}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {metaConnections.length === 0 && (
+            <div style={{ fontSize: 12, color: C.muted, marginTop: -6, marginBottom: 14 }}>
+              Add a Meta portfolio access record in Ad Accounts to save a system-user token for this account.
+            </div>
+          )}
+        </>
       )}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <button type="button" onClick={onClose} style={btnSecondary}>Cancel</button>
         <button type="submit" style={btnPrimary}>{initial ? "Save" : "Add account"}</button>
+      </div>
+    </form>
+  );
+}
+
+function MetaConnectionForm({ initial, onSave, onClose }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [businessId, setBusinessId] = useState(initial?.businessId || "");
+  const [accessToken, setAccessToken] = useState(initial?.accessToken || "");
+  const [apiVersion, setApiVersion] = useState(initial?.apiVersion || "");
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!name.trim() || !businessId.trim() || !accessToken.trim()) return;
+    onSave({
+      ...initial,
+      name: name.trim(),
+      businessId: businessId.trim(),
+      accessToken: accessToken.trim(),
+      apiVersion: apiVersion.trim() || null,
+    });
+  };
+
+  return (
+    <form onSubmit={submit}>
+      <Field label="Portfolio name">
+        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} required placeholder="e.g. Brand A Portfolio" />
+      </Field>
+      <Field label="Meta Business Portfolio ID">
+        <input value={businessId} onChange={(e) => setBusinessId(e.target.value)} style={inputStyle} required placeholder="e.g. 123456789012345" />
+      </Field>
+      <Field label="System User Access Token">
+        <textarea value={accessToken} onChange={(e) => setAccessToken(e.target.value)} style={{ ...inputStyle, minHeight: 110, resize: "vertical" }} required placeholder="Paste the Meta system-user token linked to the same app" />
+      </Field>
+      <Field label="Meta API version (optional)">
+        <input value={apiVersion} onChange={(e) => setApiVersion(e.target.value)} style={inputStyle} placeholder="e.g. v21.0" />
+      </Field>
+      <div style={{ fontSize: 12, color: C.muted, marginTop: -6, marginBottom: 14 }}>
+        This token is stored inside the CRM data so the linked Meta ad accounts can sync without relying on one global environment variable.
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <button type="button" onClick={onClose} style={btnSecondary}>Cancel</button>
+        <button type="submit" style={btnPrimary}>{initial ? "Save access" : "Add access"}</button>
       </div>
     </form>
   );
@@ -380,6 +737,292 @@ function CampaignForm({ initial, accountId, month, network, onSave, onClose }) {
   );
 }
 
+function ClientForm({ initial, accounts, onSave, onClose }) {
+  const metaAccounts = accounts.filter((item) => item.network === "meta");
+  const [name, setName] = useState(initial?.name || "");
+  const [company, setCompany] = useState(initial?.company || "");
+  const [contactName, setContactName] = useState(initial?.contactName || "");
+  const [contactEmail, setContactEmail] = useState(initial?.contactEmail || "");
+  const [notes, setNotes] = useState(initial?.notes || "");
+  const [selectedAccountIds, setSelectedAccountIds] = useState(initial?.accountIds || []);
+
+  const toggleAccount = (accountId) => {
+    setSelectedAccountIds((current) =>
+      current.includes(accountId)
+        ? current.filter((item) => item !== accountId)
+        : [...current, accountId]
+    );
+  };
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    onSave({
+      ...initial,
+      name: name.trim(),
+      company: company.trim(),
+      contactName: contactName.trim(),
+      contactEmail: contactEmail.trim(),
+      notes: notes.trim(),
+      accountIds: selectedAccountIds,
+    });
+  };
+
+  return (
+    <form onSubmit={submit}>
+      <Field label="Client name">
+        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} required placeholder="e.g. ATAS Dental" />
+      </Field>
+      <Field label="Company">
+        <input value={company} onChange={(e) => setCompany(e.target.value)} style={inputStyle} placeholder="Optional company name" />
+      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Main contact">
+          <input value={contactName} onChange={(e) => setContactName(e.target.value)} style={inputStyle} placeholder="e.g. Aina" />
+        </Field>
+        <Field label="Contact email">
+          <input type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} style={inputStyle} placeholder="e.g. aina@company.com" />
+        </Field>
+      </div>
+      <Field label="Assigned Meta ad accounts">
+        <div style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: 10, background: C.lineSoft }}>
+          {metaAccounts.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: C.muted }}>
+              Add Meta ad accounts first, then assign them to this client here.
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 8 }}>
+              {metaAccounts.map((account) => (
+                <label key={account.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.ink }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedAccountIds.includes(account.id)}
+                    onChange={() => toggleAccount(account.id)}
+                  />
+                  <span>{account.name}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      </Field>
+      <Field label="Notes">
+        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} style={{ ...inputStyle, minHeight: 90, resize: "vertical" }} placeholder="Optional internal notes about this client" />
+      </Field>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <button type="button" onClick={onClose} style={btnSecondary}>Cancel</button>
+        <button type="submit" style={btnPrimary}>{initial ? "Save client" : "Add client"}</button>
+      </div>
+    </form>
+  );
+}
+
+function ClientUserForm({ initial, clients, onSave, onClose }) {
+  const [role, setRole] = useState(initial?.role || "client");
+  const [displayName, setDisplayName] = useState(initial?.displayName || "");
+  const [username, setUsername] = useState(initial?.username || "");
+  const [clientId, setClientId] = useState(initial?.clientId || "");
+  const [password, setPassword] = useState("");
+  const [isActive, setIsActive] = useState(initial?.isActive !== false);
+  const builtInAdmin = Boolean(initial?.isBuiltIn);
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!displayName.trim() || !username.trim()) return;
+    if (!initial?.id && !password.trim()) return;
+    if (role === "client" && !clientId) return;
+
+    onSave({
+      ...initial,
+      role,
+      displayName: displayName.trim(),
+      username: username.trim().toLowerCase(),
+      clientId: role === "client" ? clientId : null,
+      password: password.trim(),
+      isActive,
+    });
+  };
+
+  return (
+    <form onSubmit={submit}>
+      <Field label="Portal role">
+        <select value={role} onChange={(e) => setRole(e.target.value)} style={selectStyle} disabled={builtInAdmin}>
+          <option value="client">Client</option>
+          <option value="admin">Admin</option>
+        </select>
+      </Field>
+      <Field label="Display name">
+        <input autoFocus value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={inputStyle} required placeholder="e.g. Sarah Tan" />
+      </Field>
+      <Field label="Username">
+        <input value={username} onChange={(e) => setUsername(e.target.value)} style={inputStyle} required placeholder="e.g. sarah.tan" />
+      </Field>
+      {role === "client" && (
+        <Field label="Linked client">
+          <select value={clientId} onChange={(e) => setClientId(e.target.value)} style={selectStyle} required>
+            <option value="">Select a client</option>
+            {clients.map((client) => (
+              <option key={client.id} value={client.id}>{client.name}</option>
+            ))}
+          </select>
+        </Field>
+      )}
+      <Field label={initial ? "New password (leave blank to keep current one)" : "Password"}>
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} style={inputStyle} required={!initial} placeholder={initial ? "Only fill this if you want to change it" : "Create a password"} />
+      </Field>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, fontSize: 13, color: builtInAdmin ? C.muted : C.ink }}>
+        <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} disabled={builtInAdmin} />
+        This portal login is active
+      </label>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <button type="button" onClick={onClose} style={btnSecondary}>Cancel</button>
+        <button type="submit" style={btnPrimary}>{initial ? "Save login" : "Create login"}</button>
+      </div>
+    </form>
+  );
+}
+
+function ClientsView({ clients, accounts, clientUsers, onAdd, onEdit, onDelete }) {
+  const metaAccounts = accounts.filter((item) => item.network === "meta");
+  const assignedTotal = clients.reduce((total, client) => total + client.accountIds.length, 0);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div className="tally-metric-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+        <Metric label="Clients" value={fmtNum(clients.length)} sub="Client records in the CRM" />
+        <Metric label="Assigned accounts" value={fmtNum(assignedTotal)} sub="Meta ad accounts mapped to clients" />
+        <Metric label="Client logins" value={fmtNum(clientUsers.filter((item) => item.role === "client").length)} sub="Portal users linked to clients" />
+        <Metric label="Meta accounts ready" value={fmtNum(metaAccounts.length)} sub="Accounts available to assign" />
+      </div>
+      <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+        <div style={{ padding: "16px 18px", borderBottom: `1px solid ${C.lineSoft}` }}>
+          <div style={{ fontWeight: 600, fontSize: 14, color: C.ink }}>Client roster</div>
+          <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+            Create each client here, then link the Meta ad accounts they are allowed to see in the portal.
+          </div>
+        </div>
+        {clients.length === 0 ? (
+          <div style={{ padding: "24px 18px", fontSize: 13, color: C.muted }}>
+            No clients yet. Add your first client, then create a login for them in Client Logins.
+          </div>
+        ) : (
+          clients.map((client, index) => {
+            const assignedAccounts = client.accountIds
+              .map((accountId) => accounts.find((item) => item.id === accountId))
+              .filter(Boolean);
+            const loginCount = clientUsers.filter((item) => item.role === "client" && item.clientId === client.id).length;
+
+            return (
+              <div key={client.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", padding: "16px 18px", borderBottom: index < clients.length - 1 ? `1px solid ${C.lineSoft}` : "none" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 600, fontSize: 13.5, color: C.ink }}>{client.name}</div>
+                    {client.company && <span style={{ fontSize: 11, color: C.muted }}>{client.company}</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 4 }}>
+                    {client.contactName || "No contact name"} {client.contactEmail ? `· ${client.contactEmail}` : ""}
+                  </div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>
+                    {assignedAccounts.length === 0
+                      ? "No Meta ad accounts assigned yet."
+                      : `Assigned accounts: ${assignedAccounts.map((item) => item.name).join(", ")}`}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: C.muted, marginTop: 6 }}>
+                    {loginCount} portal login{loginCount === 1 ? "" : "s"}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                  <button onClick={() => onEdit(client)} aria-label="Edit client" style={iconBtn}><Pencil size={15} /></button>
+                  <button onClick={() => onDelete(client.id)} aria-label="Delete client" style={iconBtn}><Trash2 size={15} /></button>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ClientLoginsView({ clientUsers, clients, onAdd, onEdit, onDelete }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={cardStyle}>
+        <div style={{ fontWeight: 600, fontSize: 14, color: C.ink, marginBottom: 4 }}>Portal access</div>
+        <div style={{ fontSize: 12, color: C.muted }}>
+          Create a username and password here. Client users only see the ad accounts assigned to their linked client. Admin users can manage the whole CRM.
+        </div>
+      </div>
+      <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+        {clientUsers.length === 0 ? (
+          <div style={{ padding: "24px 18px", fontSize: 13, color: C.muted }}>
+            No portal users yet.
+          </div>
+        ) : (
+          clientUsers.map((user, index) => {
+            const linkedClient = clients.find((item) => item.id === user.clientId);
+            return (
+              <div key={user.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", padding: "16px 18px", borderBottom: index < clientUsers.length - 1 ? `1px solid ${C.lineSoft}` : "none" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 600, fontSize: 13.5, color: C.ink }}>{user.displayName || user.username}</div>
+                    <span style={{
+                      fontSize: 10.5,
+                      padding: "3px 8px",
+                      borderRadius: 999,
+                      background: user.role === "admin" ? C.primarySoft : C.successBg,
+                      color: user.role === "admin" ? C.primary : C.success,
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: ".04em",
+                    }}>
+                      {user.role}
+                    </span>
+                    <span style={{
+                      fontSize: 10.5,
+                      padding: "3px 8px",
+                      borderRadius: 999,
+                      background: user.isActive ? C.successBg : C.dangerBg,
+                      color: user.isActive ? C.success : C.danger,
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: ".04em",
+                    }}>
+                      {user.isActive ? "Active" : "Inactive"}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 4 }}>Username: {user.username}</div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
+                    {user.role === "client"
+                      ? linkedClient
+                        ? `Linked client: ${linkedClient.name}`
+                        : "Linked client missing"
+                      : "Full CRM access"}
+                  </div>
+                  {user.isBuiltIn && (
+                    <div style={{ fontSize: 11.5, color: C.muted, marginTop: 6 }}>
+                      This is the built-in admin account. You can change its password, but it always stays active.
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                  <button onClick={() => onEdit(user)} aria-label="Edit portal user" style={iconBtn}><Pencil size={15} /></button>
+                  {!user.isBuiltIn && (
+                    <button onClick={() => onDelete(user.id)} aria-label="Delete portal user" style={iconBtn}><Trash2 size={15} /></button>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button onClick={onAdd} style={btnPrimary}><Plus size={14} /> New login</button>
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================
    sidebar
 ============================================================ */
@@ -408,7 +1051,7 @@ const NAV = [
 
 const AD_ACCOUNT_KEYS = ["ad-accounts-meta", "ad-accounts-google"];
 
-function Sidebar({ view, setView, navOpen, closeNav }) {
+function Sidebar({ view, setView, navOpen, closeNav, currentUser, navGroups, storageMode, onSignOut }) {
   const [ddOpen, setDdOpen] = useState(AD_ACCOUNT_KEYS.includes(view));
   const go = (k) => { setView(k); closeNav(); };
 
@@ -441,7 +1084,7 @@ function Sidebar({ view, setView, navOpen, closeNav }) {
       </div>
 
       <nav style={{ flex: 1, overflowY: "auto", marginTop: 4 }}>
-        {NAV.map((g) => (
+        {navGroups.map((g) => (
           <div key={g.group}>
             <div style={groupStyle}>{g.group}</div>
             {g.items.map((it) => {
@@ -481,13 +1124,15 @@ function Sidebar({ view, setView, navOpen, closeNav }) {
             width: 30, height: 30, borderRadius: "50%", background: C.primary,
             display: "flex", alignItems: "center", justifyContent: "center",
             color: "#fff", fontWeight: 600, fontSize: 13,
-          }}>D</div>
+          }}>{(currentUser?.displayName || "U").slice(0, 1).toUpperCase()}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13, color: "#fff", fontWeight: 500 }}>Demo User</div>
-            <div style={{ fontSize: 11, color: C.sidebarGroup, textTransform: "uppercase", letterSpacing: ".06em" }}>admin</div>
+            <div style={{ fontSize: 13, color: "#fff", fontWeight: 500 }}>{currentUser?.displayName || "Portal user"}</div>
+            <div style={{ fontSize: 11, color: C.sidebarGroup, textTransform: "uppercase", letterSpacing: ".06em" }}>
+              {currentUser?.role || "guest"}{currentUser?.clientName ? ` · ${currentUser.clientName}` : ""}
+            </div>
           </div>
         </div>
-        <button onClick={() => alert("In production this would sign you out.")}
+        <button onClick={onSignOut}
           style={{
             width: "100%", background: "transparent", color: C.sidebarText, border: `1px solid ${C.sidebarLine}`,
             padding: "7px 12px", borderRadius: 6, fontSize: 12.5, fontWeight: 500, cursor: "pointer",
@@ -625,6 +1270,7 @@ function ReportView({
   network, accounts, campaigns, lastSynced, onSync, onDownload,
   accountId, setAccountId, month, setMonth,
   onAddAccount, onAddCampaign, onEditCampaign, onDeleteCampaign,
+  canManage = true,
 }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -708,8 +1354,8 @@ function ReportView({
           </div>
           <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             {syncedLabel && <div style={{ fontSize: 12, color: C.muted, marginRight: 4 }}>Last synced {syncedLabel}</div>}
-            <button onClick={onAddCampaign} style={btnSecondary}><Plus size={14} /> Campaign</button>
-            <button onClick={onSync} style={btnPrimary}><RefreshCw size={13} /> Sync now</button>
+            {canManage && <button onClick={onAddCampaign} style={btnSecondary}><Plus size={14} /> Campaign</button>}
+            {canManage && <button onClick={onSync} style={btnPrimary}><RefreshCw size={13} /> Sync now</button>}
             <button onClick={onDownload} style={btnSecondary}><Download size={13} /> Download PDF</button>
           </div>
         </div>
@@ -769,8 +1415,12 @@ function ReportView({
                       <td key={i} style={{ padding: "10px 8px", textAlign: "right", fontFamily: "JetBrains Mono, monospace", color: C.inkSoft }}>{w}</td>
                     ))}
                     <td style={{ padding: "10px", textAlign: "center", whiteSpace: "nowrap" }}>
-                      <button onClick={() => onEditCampaign(c)} aria-label="Edit" style={iconBtn}><Pencil size={13} /></button>
-                      <button onClick={() => onDeleteCampaign(c.id)} aria-label="Delete" style={iconBtn}><Trash2 size={13} /></button>
+                      {canManage && (
+                        <>
+                          <button onClick={() => onEditCampaign(c)} aria-label="Edit" style={iconBtn}><Pencil size={13} /></button>
+                          <button onClick={() => onDeleteCampaign(c.id)} aria-label="Delete" style={iconBtn}><Trash2 size={13} /></button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 );
@@ -848,7 +1498,49 @@ function ReportView({
 /* ============================================================
    accounts list (per network)
 ============================================================ */
-function AccountsList({ network, accounts, campaigns, onAdd, onEdit, onDelete, onFetchMeta }) {
+function MetaConnectionsPanel({ connections, accounts, onAdd, onEdit, onDelete }) {
+  return (
+    <div style={{ ...cardStyle, marginBottom: 14, padding: 0, overflow: "hidden" }}>
+      <div style={{ padding: "16px 18px", borderBottom: `1px solid ${C.lineSoft}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14, color: C.ink }}>Meta Portfolio Access</div>
+          <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+            Save a Business Portfolio ID and system-user token here, then import or sync ad accounts from that portfolio.
+          </div>
+        </div>
+        <button onClick={onAdd} style={btnSecondary}><Plus size={14} /> Add portfolio access</button>
+      </div>
+      {connections.length === 0 ? (
+        <div style={{ padding: "22px 18px", fontSize: 13, color: C.muted }}>
+          No Meta portfolio access saved yet.
+        </div>
+      ) : (
+        connections.map((item, index) => {
+          const linkedCount = accounts.filter((account) => account.network === "meta" && account.metaConnectionId === item.id).length;
+          return (
+            <div key={item.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", padding: "14px 18px", borderBottom: index < connections.length - 1 ? `1px solid ${C.lineSoft}` : "none" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13.5, color: C.ink }}>{item.name}</div>
+                <div style={{ fontSize: 11.5, color: C.muted, marginTop: 2, fontFamily: "JetBrains Mono, monospace" }}>
+                  {item.businessId} · {maskSecret(item.accessToken)}
+                </div>
+                <div style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                  {linkedCount} linked Meta account{linkedCount === 1 ? "" : "s"}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                <button onClick={() => onEdit(item)} aria-label="Edit portfolio access" style={iconBtn}><Pencil size={15} /></button>
+                <button onClick={() => onDelete(item.id)} aria-label="Delete portfolio access" style={iconBtn}><Trash2 size={15} /></button>
+              </div>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+function AccountsList({ network, accounts, campaigns, metaConnections = [], onAdd, onEdit, onDelete, onFetchMeta }) {
   const list = accounts.filter((a) => a.network === network);
   return (
     <div>
@@ -881,6 +1573,13 @@ function AccountsList({ network, accounts, campaigns, onAdd, onEdit, onDelete, o
                     {count} campaign{count === 1 ? "" : "s"}
                     {a.metaAccountId && <span style={{ marginLeft: 8, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: C.muted }}>act_{a.metaAccountId}</span>}
                   </div>
+                  {network === "meta" && (
+                    <div style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>
+                      {a.metaConnectionId
+                        ? `Portfolio: ${metaConnections.find((item) => item.id === a.metaConnectionId)?.name || "Saved access"}`
+                        : "Portfolio: Environment fallback"}
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: "flex", gap: 4 }}>
                   <button onClick={() => onEdit(a)} aria-label="Edit account" style={iconBtn}><Pencil size={15} /></button>
@@ -898,16 +1597,36 @@ function AccountsList({ network, accounts, campaigns, onAdd, onEdit, onDelete, o
 /* ============================================================
    meta account picker (fetches from API)
 ============================================================ */
-function MetaAccountPicker({ existingAccounts, onImport, onClose }) {
-  const [loading, setLoading] = useState(true);
+function MetaAccountPicker({ existingAccounts, connections, defaultConnectionId, onImport, onClose }) {
+  const [selectedConnectionId, setSelectedConnectionId] = useState(defaultConnectionId || connections[0]?.id || "");
+  const [loading, setLoading] = useState(Boolean(connections.length));
   const [error, setError] = useState(null);
   const [available, setAvailable] = useState([]);
   const [selected, setSelected] = useState({});
+  const activeConnection = connections.find((item) => item.id === selectedConnectionId) || null;
 
   useEffect(() => {
+    if (!activeConnection) {
+      setAvailable([]);
+      setSelected({});
+      setLoading(false);
+      return;
+    }
+
     (async () => {
+      setLoading(true);
+      setError(null);
+      setSelected({});
       try {
-        const res = await fetch("/api/meta/accounts");
+        const res = await fetch("/api/meta/accounts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            businessId: activeConnection.businessId,
+            accessToken: activeConnection.accessToken,
+            apiVersion: activeConnection.apiVersion,
+          }),
+        });
         const json = await parseApiResponse(res);
 
         // Filter out already-imported accounts
@@ -919,30 +1638,47 @@ function MetaAccountPicker({ existingAccounts, onImport, onClose }) {
       }
       setLoading(false);
     })();
-  }, [existingAccounts]);
+  }, [activeConnection, existingAccounts]);
 
   const toggle = (metaId) => setSelected((prev) => ({ ...prev, [metaId]: !prev[metaId] }));
   const selectedCount = Object.values(selected).filter(Boolean).length;
 
   const doImport = () => {
+    if (!activeConnection) return;
     const toImport = available.filter((a) => selected[a.metaAccountId]);
-    onImport(toImport);
+    onImport(toImport, activeConnection);
   };
 
   return (
     <Modal title="Import Meta Ad Accounts" onClose={onClose} wide>
+      {connections.length === 0 && (
+        <div style={{ padding: "20px", background: C.dangerBg, borderRadius: 8, color: C.danger, fontSize: 13 }}>
+          Add a Meta portfolio access record first so the CRM knows which Business Portfolio ID and token to use.
+        </div>
+      )}
+      {connections.length > 0 && (
+        <Field label="Meta portfolio access">
+          <select value={selectedConnectionId} onChange={(e) => setSelectedConnectionId(e.target.value)} style={selectStyle}>
+            {connections.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name} · {item.businessId}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       {loading && <div style={{ padding: "30px 0", textAlign: "center", color: C.muted, fontSize: 13 }}>Fetching accounts from Meta…</div>}
       {error && (
         <div style={{ padding: "20px", background: C.dangerBg, borderRadius: 8, color: C.danger, fontSize: 13, marginBottom: 14 }}>
           {error}
         </div>
       )}
-      {!loading && !error && available.length === 0 && (
+      {!loading && !error && connections.length > 0 && available.length === 0 && (
         <div style={{ padding: "30px 0", textAlign: "center", color: C.muted, fontSize: 13 }}>
-          All ad accounts from your Business Manager have already been imported.
+          All ad accounts from this Business Portfolio have already been imported.
         </div>
       )}
-      {!loading && !error && available.length > 0 && (
+      {!loading && !error && connections.length > 0 && available.length > 0 && (
         <>
           <div style={{ fontSize: 13, color: C.inkSoft, marginBottom: 14 }}>
             {available.length} account{available.length === 1 ? "" : "s"} found. Select which ones to add:
@@ -1115,6 +1851,81 @@ function StubView({ title, blurb }) {
   );
 }
 
+function PortalLoginCard({ username, setUsername, password, setPassword, onSubmit, loading, error }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, padding: 24, fontFamily: "Inter, sans-serif" }}>
+      <div style={{ ...cardStyle, width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(15,23,42,0.12)" }}>
+        <div style={{ width: 44, height: 44, borderRadius: 10, background: C.primarySoft, color: C.primary, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+          <KeyRound size={20} />
+        </div>
+        <h1 style={{ margin: "0 0 8px", fontSize: 24, color: C.ink }}>CRM Portal Login</h1>
+        <p style={{ margin: "0 0 18px", color: C.inkSoft, fontSize: 14, lineHeight: 1.5 }}>
+          Sign in as an admin or client. Client logins only see the Meta ad accounts assigned to them.
+        </p>
+        <form onSubmit={onSubmit}>
+          <Field label="Username">
+            <input
+              autoFocus
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              style={inputStyle}
+              placeholder="Enter your username"
+              required
+            />
+          </Field>
+          <Field label="Password">
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={inputStyle}
+              placeholder="Enter your password"
+              required
+            />
+          </Field>
+          {error && <div style={{ marginBottom: 14, fontSize: 13, color: C.danger }}>{error}</div>}
+          <button type="submit" style={{ ...btnPrimary, width: "100%", justifyContent: "center" }} disabled={loading}>
+            {loading ? "Signing in…" : "Enter CRM portal"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function SharedLoginCard({ password, setPassword, onSubmit, loading, error }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, padding: 24, fontFamily: "Inter, sans-serif" }}>
+      <div style={{ ...cardStyle, width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(15,23,42,0.12)" }}>
+        <div style={{ width: 44, height: 44, borderRadius: 10, background: C.primarySoft, color: C.primary, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+          <KeyRound size={20} />
+        </div>
+        <h1 style={{ margin: "0 0 8px", fontSize: 24, color: C.ink }}>Shared CRM Sync</h1>
+        <p style={{ margin: "0 0 18px", color: C.inkSoft, fontSize: 14, lineHeight: 1.5 }}>
+          This project is using a shared server copy of the CRM, so sign in with the shared sync password to keep all devices on the same data.
+        </p>
+        <form onSubmit={onSubmit}>
+          <Field label="Shared sync password">
+            <input
+              autoFocus
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={inputStyle}
+              placeholder="Enter the shared password"
+              required
+            />
+          </Field>
+          {error && <div style={{ marginBottom: 14, fontSize: 13, color: C.danger }}>{error}</div>}
+          <button type="submit" style={{ ...btnPrimary, width: "100%", justifyContent: "center" }} disabled={loading}>
+            {loading ? "Signing in…" : "Enter shared CRM"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================
    root
 ============================================================ */
@@ -1123,6 +1934,9 @@ export default function CRM() {
   const [deals, setDeals] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
+  const [metaConnections, setMetaConnections] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [clientUsers, setClientUsers] = useState([]);
   const [syncMap, setSyncMap] = useState({}); // { meta: ts, google: ts }
   const [view, setView] = useState("pipeline");
   const [ready, setReady] = useState(false);
@@ -1130,30 +1944,184 @@ export default function CRM() {
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
+  const [storageMode, setStorageMode] = useState("loading");
+  const [portalConfigured, setPortalConfigured] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [portalUsername, setPortalUsername] = useState("");
+  const [portalPassword, setPortalPassword] = useState("");
+  const [portalLoading, setPortalLoading] = useState(false);
+  const [portalError, setPortalError] = useState("");
 
   const [metaAccountId, setMetaAccountId] = useState("");
   const [metaMonth, setMetaMonth] = useState(MONTHS[0].value);
   const [googleAccountId, setGoogleAccountId] = useState("");
   const [googleMonth, setGoogleMonth] = useState(MONTHS[0].value);
+  const sharedEnabledRef = useRef(false);
+  const currentUserRef = useRef(null);
+
+  const applySnapshot = (snapshot) => {
+    const next = normalizeCrmState(snapshot);
+    setContacts(next.contacts);
+    setDeals(next.deals);
+    setAccounts(next.accounts);
+    setCampaigns(next.campaigns);
+    setMetaConnections(next.metaConnections);
+    setClients(next.clients);
+    setClientUsers(next.clientUsers);
+    setSyncMap(next.syncMap);
+
+    const keptMeta = next.accounts.find((item) => item.network === "meta" && item.id === metaAccountId);
+    const keptGoogle = next.accounts.find((item) => item.network === "google" && item.id === googleAccountId);
+    const firstMeta = next.accounts.find((item) => item.network === "meta");
+    const firstGoogle = next.accounts.find((item) => item.network === "google");
+    setMetaAccountId(keptMeta?.id || firstMeta?.id || "");
+    setGoogleAccountId(keptGoogle?.id || firstGoogle?.id || "");
+
+    return next;
+  };
+
+  const buildSnapshot = (overrides = {}) =>
+    normalizeCrmState({
+      contacts,
+      deals,
+      accounts,
+      campaigns,
+      metaConnections,
+      clients,
+      clientUsers,
+      syncMap,
+      ...overrides,
+    });
+
+  const persistSnapshot = async (snapshot, fallbackMessage = "Could not save — try again") => {
+    const next = normalizeCrmState(snapshot);
+    applySnapshot(next);
+
+    try {
+      if (sharedEnabledRef.current) {
+        const saved = await saveSharedCrmState(next);
+        applySnapshot(saved);
+        await writeLocalCrmState(saved);
+        setStorageMode("shared");
+        return saved;
+      }
+
+      await writeLocalCrmState(next);
+      return next;
+    } catch (error) {
+      if (error.code === "unauthorized") {
+        sharedEnabledRef.current = false;
+        setCurrentUser(null);
+        setPortalError("Your CRM session expired. Sign in again to continue.");
+      }
+
+      if (error.code === "storage_not_configured" || error.code === "auth_not_configured") {
+        sharedEnabledRef.current = false;
+        setStorageMode("local");
+      }
+
+      setToast(error.message || fallbackMessage);
+
+      try {
+        await writeLocalCrmState(next);
+      } catch {
+        setToast("Could not save a local backup on this device.");
+      }
+
+      return next;
+    }
+  };
+
+  const loadLocalPortalUser = async (state) => {
+    const localSession = await readLocalPortalSession();
+    if (!localSession?.userId) {
+      return null;
+    }
+
+    const user = state.clientUsers.find(
+      (item) =>
+        item.id === localSession.userId &&
+        item.role === localSession.role &&
+        item.isActive !== false
+    );
+
+    return user ? summarizePortalUser(user, state.clients) : null;
+  };
+
+  const initializeCrm = async () => {
+    const localState = await readLocalCrmState();
+
+    try {
+      const session = await fetchPortalSessionStatus();
+      setPortalConfigured(Boolean(session.configured));
+
+      if (!session.configured) {
+        sharedEnabledRef.current = false;
+        setStorageMode("local");
+        const normalized = applySnapshot(localState);
+        const localUser = await loadLocalPortalUser(normalized);
+        setCurrentUser(localUser);
+        currentUserRef.current = localUser;
+        setReady(true);
+        return;
+      }
+
+      if (!session.authenticated || !session.user) {
+        sharedEnabledRef.current = false;
+        setStorageMode("shared");
+        setCurrentUser(null);
+        currentUserRef.current = null;
+        setReady(true);
+        return;
+      }
+
+      sharedEnabledRef.current = true;
+      setStorageMode("shared");
+      setPortalError("");
+      setCurrentUser(session.user);
+      currentUserRef.current = session.user;
+
+      const remoteState = await fetchSharedCrmState();
+      let startingState = remoteState;
+
+      if (session.user.role === "admin" && !hasCrmData(remoteState) && hasCrmData(localState)) {
+        startingState = await saveSharedCrmState(localState);
+        setToast("Shared sync is ready. Existing data from this browser was uploaded.");
+      }
+
+      await writeLocalCrmState(startingState);
+      applySnapshot(startingState);
+      setReady(true);
+    } catch (error) {
+      sharedEnabledRef.current = false;
+      setStorageMode("local");
+      const normalized = applySnapshot(localState);
+      const localUser = await loadLocalPortalUser(normalized);
+      setCurrentUser(localUser);
+      currentUserRef.current = localUser;
+      setReady(true);
+
+      if (error.code === "storage_not_configured" || error.code === "auth_not_configured") {
+        setPortalConfigured(false);
+        setToast("Shared sync is not configured yet. This device is using local browser data.");
+      } else {
+        setPortalConfigured(false);
+        setToast("Could not reach shared sync. This device is using local browser data.");
+      }
+    }
+  };
 
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
-      const load = async (k, fallback) => {
-        try { const r = await storage.get(k); return r ? JSON.parse(r.value) : fallback; }
-        catch { return fallback; }
-      };
-      const [c, d, a, cp, s] = await Promise.all([
-        load("crm-contacts", []), load("crm-deals", []),
-        load("crm-accounts", []), load("crm-campaigns", []),
-        load("crm-sync", {}),
-      ]);
-      setContacts(c); setDeals(d); setAccounts(a); setCampaigns(cp); setSyncMap(s);
-      const firstMeta = a.find((x) => x.network === "meta");
-      const firstGoogle = a.find((x) => x.network === "google");
-      if (firstMeta) setMetaAccountId(firstMeta.id);
-      if (firstGoogle) setGoogleAccountId(firstGoogle.id);
-      setReady(true);
+      await initializeCrm();
+      if (cancelled) return;
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1163,34 +2131,62 @@ export default function CRM() {
   }, [toast]);
 
   useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (storageMode !== "local" || !currentUserRef.current) {
+      return;
+    }
+
+    const user = clientUsers.find(
+      (item) =>
+        item.id === currentUserRef.current.id &&
+        item.role === currentUserRef.current.role &&
+        item.isActive !== false
+    );
+
+    if (!user) {
+      clearLocalPortalSession();
+      setCurrentUser(null);
+      return;
+    }
+
+    setCurrentUser(summarizePortalUser(user, clients));
+  }, [clientUsers, clients, storageMode]);
+
+  useEffect(() => {
     const metaList = accounts.filter((a) => a.network === "meta");
     const gList = accounts.filter((a) => a.network === "google");
     if (metaList.length && !metaList.find((a) => a.id === metaAccountId)) setMetaAccountId(metaList[0].id);
     if (gList.length && !gList.find((a) => a.id === googleAccountId)) setGoogleAccountId(gList[0].id);
   }, [accounts, metaAccountId, googleAccountId]);
 
-  const persist = async (key, value, setter) => {
-    setter(value);
-    try { await storage.set(key, JSON.stringify(value)); }
-    catch { setToast("Could not save — try again"); }
-  };
-
   // contacts
   const saveContact = (data) => {
     const updated = data.id ? contacts.map((c) => c.id === data.id ? { ...c, ...data } : c)
                             : [...contacts, { ...data, id: uid(), createdAt: Date.now() }];
-    persist("crm-contacts", updated, setContacts); setModal(null);
+    persistSnapshot(buildSnapshot({ contacts: updated }));
+    setModal(null);
   };
-  const deleteContact = (id) => { if (window.confirm("Delete this contact?")) persist("crm-contacts", contacts.filter((c) => c.id !== id), setContacts); };
+  const deleteContact = (id) => {
+    if (!window.confirm("Delete this contact?")) return;
+    persistSnapshot(buildSnapshot({ contacts: contacts.filter((c) => c.id !== id) }));
+  };
 
   // deals
   const saveDeal = (data) => {
     const updated = data.id ? deals.map((d) => d.id === data.id ? { ...d, ...data } : d)
                             : [...deals, { ...data, id: uid(), createdAt: Date.now() }];
-    persist("crm-deals", updated, setDeals); setModal(null);
+    persistSnapshot(buildSnapshot({ deals: updated }));
+    setModal(null);
   };
-  const deleteDeal = (id) => { if (window.confirm("Delete this deal?")) persist("crm-deals", deals.filter((d) => d.id !== id), setDeals); };
-  const moveDeal = (id, stage) => persist("crm-deals", deals.map((d) => d.id === id ? { ...d, stage } : d), setDeals);
+  const deleteDeal = (id) => {
+    if (!window.confirm("Delete this deal?")) return;
+    persistSnapshot(buildSnapshot({ deals: deals.filter((d) => d.id !== id) }));
+  };
+  const moveDeal = (id, stage) =>
+    persistSnapshot(buildSnapshot({ deals: deals.map((d) => d.id === id ? { ...d, stage } : d) }));
 
   // accounts
   const saveAccount = (data) => {
@@ -1202,38 +2198,179 @@ export default function CRM() {
       if (newAcc.network === "meta" && !metaAccountId) setMetaAccountId(newAcc.id);
       if (newAcc.network === "google" && !googleAccountId) setGoogleAccountId(newAcc.id);
     }
-    persist("crm-accounts", updated, setAccounts); setModal(null);
+    persistSnapshot(buildSnapshot({ accounts: updated }));
+    setModal(null);
+  };
+  const saveMetaConnection = (data) => {
+    const saved = data.id
+      ? { ...data }
+      : { ...data, id: uid(), createdAt: Date.now() };
+    const nextConnections = data.id
+      ? metaConnections.map((item) => item.id === data.id ? saved : item)
+      : [...metaConnections, saved];
+    const nextAccounts = data.id
+      ? accounts.map((account) => (
+          account.network === "meta" && account.metaConnectionId === data.id
+            ? { ...account, metaBusinessId: saved.businessId }
+            : account
+        ))
+      : accounts;
+    persistSnapshot(buildSnapshot({
+      accounts: nextAccounts,
+      metaConnections: nextConnections,
+    }));
+    setModal(null);
   };
   const deleteAccount = (id) => {
     const linked = campaigns.filter((c) => c.accountId === id).length;
     const msg = linked ? `Delete this account and its ${linked} campaign${linked === 1 ? "" : "s"}?` : "Delete this account?";
     if (!window.confirm(msg)) return;
-    persist("crm-accounts", accounts.filter((a) => a.id !== id), setAccounts);
-    if (linked) persist("crm-campaigns", campaigns.filter((c) => c.accountId !== id), setCampaigns);
+    const nextAccounts = accounts.filter((a) => a.id !== id);
+    const nextCampaigns = linked ? campaigns.filter((c) => c.accountId !== id) : campaigns;
+    const nextClients = clients.map((client) => ({
+      ...client,
+      accountIds: client.accountIds.filter((accountId) => accountId !== id),
+    }));
+    persistSnapshot(buildSnapshot({ accounts: nextAccounts, campaigns: nextCampaigns, clients: nextClients }));
+  };
+  const deleteMetaConnection = (id) => {
+    const linkedCount = accounts.filter((account) => account.network === "meta" && account.metaConnectionId === id).length;
+    const msg = linkedCount
+      ? `Delete this Meta portfolio access? ${linkedCount} linked Meta account${linkedCount === 1 ? "" : "s"} will stop using its saved token until you reassign it.`
+      : "Delete this Meta portfolio access?";
+    if (!window.confirm(msg)) return;
+
+    const nextConnections = metaConnections.filter((item) => item.id !== id);
+    const nextAccounts = linkedCount
+      ? accounts.map((account) => (
+          account.network === "meta" && account.metaConnectionId === id
+            ? { ...account, metaConnectionId: null }
+            : account
+        ))
+      : accounts;
+
+    persistSnapshot(buildSnapshot({
+      accounts: nextAccounts,
+      metaConnections: nextConnections,
+    }));
   };
 
   // campaigns
   const saveCampaign = (data) => {
     const updated = data.id ? campaigns.map((c) => c.id === data.id ? { ...c, ...data } : c)
                             : [...campaigns, { ...data, id: uid(), createdAt: Date.now() }];
-    persist("crm-campaigns", updated, setCampaigns); setModal(null);
+    persistSnapshot(buildSnapshot({ campaigns: updated }));
+    setModal(null);
   };
-  const deleteCampaign = (id) => { if (window.confirm("Delete this campaign?")) persist("crm-campaigns", campaigns.filter((c) => c.id !== id), setCampaigns); };
+  const deleteCampaign = (id) => {
+    if (!window.confirm("Delete this campaign?")) return;
+    persistSnapshot(buildSnapshot({ campaigns: campaigns.filter((c) => c.id !== id) }));
+  };
+
+  // clients
+  const saveClient = (data) => {
+    const nextClients = data.id
+      ? clients.map((item) => (item.id === data.id ? { ...item, ...data } : item))
+      : [...clients, { ...data, id: uid(), createdAt: Date.now() }];
+    persistSnapshot(buildSnapshot({ clients: nextClients }));
+    setModal(null);
+  };
+
+  const deleteClient = (id) => {
+    const linkedUsers = clientUsers.filter((item) => item.role === "client" && item.clientId === id).length;
+    const message = linkedUsers
+      ? `Delete this client and its ${linkedUsers} linked portal login${linkedUsers === 1 ? "" : "s"}?`
+      : "Delete this client?";
+    if (!window.confirm(message)) return;
+
+    const nextClients = clients.filter((item) => item.id !== id);
+    const nextClientUsers = clientUsers.filter((item) => item.clientId !== id);
+    persistSnapshot(buildSnapshot({ clients: nextClients, clientUsers: nextClientUsers }));
+  };
+
+  const saveClientUser = async (data) => {
+    const normalizedUsername = data.username.trim().toLowerCase();
+    const duplicate = clientUsers.find(
+      (item) => item.username === normalizedUsername && item.id !== data.id
+    );
+    if (duplicate) {
+      setToast("That username is already in use.");
+      return;
+    }
+
+    let passwordHash = data.passwordHash || "";
+    if (data.password) {
+      try {
+        passwordHash = await hashPortalPassword(data.password);
+      } catch (error) {
+        setToast(error.message || "Could not secure this password.");
+        return;
+      }
+    }
+
+    if (!passwordHash) {
+      setToast("A password is required for this login.");
+      return;
+    }
+
+    const payload = {
+      ...data,
+      username: normalizedUsername,
+      passwordHash,
+      password: undefined,
+    };
+    const nextUsers = data.id
+      ? clientUsers.map((item) => (item.id === data.id ? { ...item, ...payload } : item))
+      : [...clientUsers, { ...payload, id: uid(), createdAt: Date.now(), isBuiltIn: false }];
+
+    const saved = await persistSnapshot(buildSnapshot({ clientUsers: nextUsers }));
+    const targetId = data.id || nextUsers[nextUsers.length - 1]?.id;
+    if (currentUserRef.current?.id === targetId) {
+      const nextUser = saved.clientUsers.find((item) => item.id === targetId);
+      if (nextUser) {
+        const summary = summarizePortalUser(nextUser, saved.clients);
+        setCurrentUser(summary);
+        if (storageMode === "local") {
+          await writeLocalPortalSession({ userId: nextUser.id, role: nextUser.role });
+        }
+      }
+    }
+    setModal(null);
+  };
+
+  const deleteClientUser = async (id) => {
+    if (currentUserRef.current?.id === id) {
+      setToast("Sign out first before removing your own login.");
+      return;
+    }
+    if (!window.confirm("Delete this portal login?")) return;
+    const nextUsers = clientUsers.filter((item) => item.id !== id);
+    await persistSnapshot(buildSnapshot({ clientUsers: nextUsers }));
+    if (storageMode === "local" && currentUserRef.current?.id === id) {
+      await clearLocalPortalSession();
+      setCurrentUser(null);
+    }
+  };
 
   // ── Meta account import ──
   const [showMetaPicker, setShowMetaPicker] = useState(false);
 
-  const importMetaAccounts = (metaAccounts) => {
+  const importMetaAccounts = (metaAccounts, connection) => {
     const newAccounts = metaAccounts.map((a) => ({
       id: uid(),
       name: a.name,
       network: "meta",
       metaAccountId: a.metaAccountId,
+      metaConnectionId: connection?.id || null,
+      metaBusinessId: connection?.businessId || null,
+      metaApiVersion: connection?.apiVersion || null,
+      actId: a.actId || null,
       currency: a.currency,
+      timezone: a.timezone || "",
       createdAt: Date.now(),
     }));
     const updated = [...accounts, ...newAccounts];
-    persist("crm-accounts", updated, setAccounts);
+    persistSnapshot(buildSnapshot({ accounts: updated }));
     if (!metaAccountId && newAccounts.length) setMetaAccountId(newAccounts[0].id);
     setShowMetaPicker(false);
     setToast(`Imported ${newAccounts.length} account${newAccounts.length === 1 ? "" : "s"} from Meta`);
@@ -1241,12 +2378,19 @@ export default function CRM() {
 
   // ── Sync: calls Meta Marketing API via our backend route ──
   const [syncing, setSyncing] = useState(false);
+  const openMetaAccountPicker = () => {
+    if (!metaConnections.length) {
+      setModal({ type: "meta-connection", data: null });
+      return;
+    }
+    setShowMetaPicker(true);
+  };
 
   const doSync = async (network, accountIdOverride) => {
     if (network === "google") {
       // Google sync not yet wired — placeholder
       const updated = { ...syncMap, google: Date.now() };
-      persist("crm-sync", updated, setSyncMap);
+      await persistSnapshot(buildSnapshot({ syncMap: updated }));
       setToast("Google sync is not connected yet — add campaigns manually for now.");
       return;
     }
@@ -1254,6 +2398,7 @@ export default function CRM() {
     // Find the selected account and its metaAccountId
     const selectedId = accountIdOverride || metaAccountId;
     const account = accounts.find((a) => a.id === selectedId);
+    const connection = metaConnections.find((item) => item.id === account?.metaConnectionId);
     if (!account?.metaAccountId) {
       setToast("This account has no Meta Ad Account ID — edit it and add one, or re-import from Meta.");
       return;
@@ -1266,7 +2411,12 @@ export default function CRM() {
       const res = await fetch("/api/meta/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ metaAccountId: account.metaAccountId, month: metaMonth }),
+        body: JSON.stringify({
+          metaAccountId: account.metaAccountId,
+          month: metaMonth,
+          accessToken: connection?.accessToken || null,
+          apiVersion: connection?.apiVersion || account?.metaApiVersion || null,
+        }),
       });
       const json = await parseApiResponse(res);
 
@@ -1284,11 +2434,13 @@ export default function CRM() {
         (c) => !(c.accountId === selectedId && c.month === metaMonth && c.network === "meta")
       );
       const updatedCampaigns = [...otherCampaigns, ...freshCampaigns];
-      persist("crm-campaigns", updatedCampaigns, setCampaigns);
 
       // Update sync timestamp
       const updatedSync = { ...syncMap, meta: Date.now() };
-      persist("crm-sync", updatedSync, setSyncMap);
+      await persistSnapshot(buildSnapshot({
+        campaigns: updatedCampaigns,
+        syncMap: updatedSync,
+      }), "Could not save the synced CRM data.");
 
       setToast(`Synced ${freshCampaigns.length} campaign${freshCampaigns.length === 1 ? "" : "s"} from Meta`);
     } catch (e) {
@@ -1297,16 +2449,154 @@ export default function CRM() {
     setSyncing(false);
   };
 
+  const handlePortalLogin = async (e) => {
+    e.preventDefault();
+    setPortalLoading(true);
+    setPortalError("");
+
+    try {
+      if (portalConfigured) {
+        await loginPortal(portalUsername, portalPassword);
+        setPortalUsername("");
+        setPortalPassword("");
+        setReady(false);
+        await initializeCrm();
+      } else {
+        const localState = normalizeCrmState({
+          contacts,
+          deals,
+          accounts,
+          campaigns,
+          metaConnections,
+          clients,
+          clientUsers,
+          syncMap,
+        });
+        const username = portalUsername.trim().toLowerCase();
+        const passwordHash = await hashPortalPassword(portalPassword);
+        const user = localState.clientUsers.find(
+          (item) =>
+            item.username === username &&
+            item.passwordHash === passwordHash &&
+            item.isActive !== false
+        );
+
+        if (!user) {
+          throw new Error("Incorrect username or password.");
+        }
+
+        const summary = summarizePortalUser(user, localState.clients);
+        await writeLocalPortalSession({ userId: user.id, role: user.role });
+        setCurrentUser(summary);
+        currentUserRef.current = summary;
+        setPortalUsername("");
+        setPortalPassword("");
+      }
+    } catch (error) {
+      setPortalError(error.message || "Could not sign in to the CRM portal.");
+    }
+
+    setPortalLoading(false);
+  };
+
+  const handlePortalLogout = async () => {
+    if (portalConfigured) {
+      try {
+        await logoutPortal();
+      } catch {
+        // Ignore logout errors and still lock the portal locally.
+      }
+    } else {
+      await clearLocalPortalSession();
+    }
+
+    sharedEnabledRef.current = false;
+    currentUserRef.current = null;
+    setCurrentUser(null);
+    setPortalError("");
+    setReady(true);
+  };
+
   const doDownload = (network) => {
     setToast("PDF export opens your browser's print dialog (sidebar hidden automatically).");
     try { window.print(); } catch (e) {}
   };
+
+  const isAdmin = currentUser?.role !== "client";
+  const linkedClient = currentUser?.role === "client"
+    ? clients.find((item) => item.id === currentUser.clientId)
+    : null;
+  const allowedAccountIds = useMemo(
+    () => new Set(isAdmin ? accounts.map((item) => item.id) : linkedClient?.accountIds || []),
+    [accounts, isAdmin, linkedClient]
+  );
+  const visibleAccounts = useMemo(
+    () => (isAdmin ? accounts : accounts.filter((item) => allowedAccountIds.has(item.id))),
+    [accounts, isAdmin, allowedAccountIds]
+  );
+  const visibleCampaigns = useMemo(
+    () => (isAdmin ? campaigns : campaigns.filter((item) => allowedAccountIds.has(item.accountId))),
+    [campaigns, isAdmin, allowedAccountIds]
+  );
+  const navGroups = useMemo(
+    () =>
+      isAdmin
+        ? NAV
+        : NAV
+            .filter((group) => group.group === "Marketing")
+            .map((group) => ({
+              ...group,
+              items: group.items.filter((item) => item.key === "meta-report"),
+            })),
+    [isAdmin]
+  );
+
+  useEffect(() => {
+    if (!isAdmin && view !== "meta-report") {
+      setView("meta-report");
+    }
+  }, [isAdmin, view]);
+
+  useEffect(() => {
+    const metaList = visibleAccounts.filter((item) => item.network === "meta");
+    const gList = visibleAccounts.filter((item) => item.network === "google");
+
+    if (metaList.length) {
+      if (!metaList.find((item) => item.id === metaAccountId)) {
+        setMetaAccountId(metaList[0].id);
+      }
+    } else if (metaAccountId) {
+      setMetaAccountId("");
+    }
+
+    if (gList.length) {
+      if (!gList.find((item) => item.id === googleAccountId)) {
+        setGoogleAccountId(gList[0].id);
+      }
+    } else if (googleAccountId) {
+      setGoogleAccountId("");
+    }
+  }, [visibleAccounts, metaAccountId, googleAccountId]);
 
   if (!ready) {
     return (
       <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontFamily: "Inter, sans-serif", background: C.bg }}>
         Loading…
       </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <PortalLoginCard
+        username={portalUsername}
+        setUsername={setPortalUsername}
+        password={portalPassword}
+        setPassword={setPortalPassword}
+        onSubmit={handlePortalLogin}
+        loading={portalLoading}
+        error={portalError}
+      />
     );
   }
 
@@ -1320,8 +2610,11 @@ export default function CRM() {
   };
 
   const headerAction = (() => {
+    if (!isAdmin) return null;
     if (view === "pipeline") return { label: "New deal", onClick: () => setModal({ type: "deal", data: null }) };
     if (view === "contacts") return { label: "New contact", onClick: () => setModal({ type: "contact", data: null }) };
+    if (view === "clients") return { label: "New client", onClick: () => setModal({ type: "client", data: null }) };
+    if (view === "client-logins") return { label: "New login", onClick: () => setModal({ type: "client-user", data: null }) };
     if (view === "ad-accounts-meta") return { label: "New Meta account", onClick: () => setModal({ type: "account", data: null, network: "meta" }) };
     if (view === "ad-accounts-google") return { label: "New Google account", onClick: () => setModal({ type: "account", data: null, network: "google" }) };
     return null;
@@ -1351,7 +2644,16 @@ export default function CRM() {
           .tally-main { padding: 0 !important; max-width: none !important; }
         }
       `}</style>
-      <Sidebar view={view} setView={setView} navOpen={navOpen} closeNav={() => setNavOpen(false)} />
+      <Sidebar
+        view={view}
+        setView={setView}
+        navOpen={navOpen}
+        closeNav={() => setNavOpen(false)}
+        currentUser={currentUser}
+        navGroups={navGroups}
+        storageMode={storageMode}
+        onSignOut={handlePortalLogout}
+      />
       <div className="tally-overlay" onClick={() => setNavOpen(false)} />
       <main className="tally-main" style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <header className="tally-topbar" style={{
@@ -1363,6 +2665,18 @@ export default function CRM() {
             <Menu size={20} />
           </button>
           <div style={{ fontWeight: 600, fontSize: 15, color: C.ink, flex: 1 }}>{PAGE[view]}</div>
+          <div style={{
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: ".04em",
+            textTransform: "uppercase",
+            borderRadius: 999,
+            padding: "5px 10px",
+            background: storageMode === "shared" ? C.successBg : "rgba(245,158,11,.12)",
+            color: storageMode === "shared" ? C.success : C.amber,
+          }}>
+            {storageMode === "shared" ? "Shared Sync On" : "Device Only"}
+          </div>
         </header>
 
         <div style={{ flex: 1, padding: "20px 24px", maxWidth: 1280, width: "100%", margin: "0 auto", alignSelf: "stretch" }}>
@@ -1390,7 +2704,7 @@ export default function CRM() {
 
           {view === "meta-report" && (
             <ReportView
-              network="meta" accounts={accounts} campaigns={campaigns}
+              network="meta" accounts={visibleAccounts} campaigns={visibleCampaigns}
               lastSynced={syncMap.meta}
               accountId={metaAccountId} setAccountId={setMetaAccountId}
               month={metaMonth} setMonth={setMetaMonth}
@@ -1399,11 +2713,12 @@ export default function CRM() {
               onAddCampaign={() => setModal({ type: "campaign", data: null, network: "meta" })}
               onEditCampaign={(c) => setModal({ type: "campaign", data: c, network: c.network })}
               onDeleteCampaign={deleteCampaign}
+              canManage={isAdmin}
             />
           )}
           {view === "google-report" && (
             <ReportView
-              network="google" accounts={accounts} campaigns={campaigns}
+              network="google" accounts={visibleAccounts} campaigns={visibleCampaigns}
               lastSynced={syncMap.google}
               accountId={googleAccountId} setAccountId={setGoogleAccountId}
               month={googleMonth} setMonth={setGoogleMonth}
@@ -1412,17 +2727,44 @@ export default function CRM() {
               onAddCampaign={() => setModal({ type: "campaign", data: null, network: "google" })}
               onEditCampaign={(c) => setModal({ type: "campaign", data: c, network: c.network })}
               onDeleteCampaign={deleteCampaign}
+              canManage={isAdmin}
             />
           )}
-          {view === "clients" && <StubView title="Clients" blurb="Marketing-side client roster, separate from sales contacts. Add accounts under Ad Accounts to start tracking campaigns per client." />}
-          {view === "client-logins" && <StubView title="Client logins" blurb="Per-client portal access lives here in production. Requires an auth system and per-tenant scopes." />}
+          {view === "clients" && (
+            <ClientsView
+              clients={clients}
+              accounts={accounts}
+              clientUsers={clientUsers}
+              onAdd={() => setModal({ type: "client", data: null })}
+              onEdit={(client) => setModal({ type: "client", data: client })}
+              onDelete={deleteClient}
+            />
+          )}
+          {view === "client-logins" && (
+            <ClientLoginsView
+              clientUsers={clientUsers}
+              clients={clients}
+              onAdd={() => setModal({ type: "client-user", data: null })}
+              onEdit={(user) => setModal({ type: "client-user", data: user })}
+              onDelete={deleteClientUser}
+            />
+          )}
 
           {view === "ad-accounts-meta" && (
-            <AccountsList network="meta" accounts={accounts} campaigns={campaigns}
-              onAdd={() => setModal({ type: "account", data: null, network: "meta" })}
-              onEdit={(a) => setModal({ type: "account", data: a, network: a.network })}
-              onDelete={deleteAccount}
-              onFetchMeta={() => setShowMetaPicker(true)} />
+            <>
+              <MetaConnectionsPanel
+                connections={metaConnections}
+                accounts={accounts}
+                onAdd={() => setModal({ type: "meta-connection", data: null })}
+                onEdit={(connection) => setModal({ type: "meta-connection", data: connection })}
+                onDelete={deleteMetaConnection}
+              />
+              <AccountsList network="meta" accounts={accounts} campaigns={campaigns} metaConnections={metaConnections}
+                onAdd={() => setModal({ type: "account", data: null, network: "meta" })}
+                onEdit={(a) => setModal({ type: "account", data: a, network: a.network })}
+                onDelete={deleteAccount}
+                onFetchMeta={openMetaAccountPicker} />
+            </>
           )}
           {view === "ad-accounts-google" && (
             <AccountsList network="google" accounts={accounts} campaigns={campaigns}
@@ -1451,7 +2793,22 @@ export default function CRM() {
       )}
       {modal?.type === "account" && (
         <Modal title={modal.data ? "Edit account" : "Add ad account"} onClose={() => setModal(null)}>
-          <AccountForm initial={modal.data} network={modal.network} onSave={saveAccount} onClose={() => setModal(null)} />
+          <AccountForm initial={modal.data} network={modal.network} metaConnections={metaConnections} onSave={saveAccount} onClose={() => setModal(null)} />
+        </Modal>
+      )}
+      {modal?.type === "client" && (
+        <Modal title={modal.data ? "Edit client" : "Add client"} onClose={() => setModal(null)}>
+          <ClientForm initial={modal.data} accounts={accounts} onSave={saveClient} onClose={() => setModal(null)} />
+        </Modal>
+      )}
+      {modal?.type === "client-user" && (
+        <Modal title={modal.data ? "Edit login" : "Create login"} onClose={() => setModal(null)}>
+          <ClientUserForm initial={modal.data} clients={clients} onSave={saveClientUser} onClose={() => setModal(null)} />
+        </Modal>
+      )}
+      {modal?.type === "meta-connection" && (
+        <Modal title={modal.data ? "Edit Meta portfolio access" : "Add Meta portfolio access"} onClose={() => setModal(null)}>
+          <MetaConnectionForm initial={modal.data} onSave={saveMetaConnection} onClose={() => setModal(null)} />
         </Modal>
       )}
       {modal?.type === "campaign" && (
@@ -1468,6 +2825,8 @@ export default function CRM() {
       {showMetaPicker && (
         <MetaAccountPicker
           existingAccounts={accounts}
+          connections={metaConnections}
+          defaultConnectionId={accounts.find((item) => item.id === metaAccountId)?.metaConnectionId || metaConnections[0]?.id || ""}
           onImport={importMetaAccounts}
           onClose={() => setShowMetaPicker(false)}
         />

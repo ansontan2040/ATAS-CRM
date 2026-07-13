@@ -2,13 +2,6 @@
 // POST /api/meta/sync   body: { metaAccountId: "123456789", month: "2026-06" }
 
 export async function POST(request) {
-  const token = process.env.META_ACCESS_TOKEN;
-  const ver = process.env.META_API_VERSION || "v21.0";
-
-  if (!token) {
-    return Response.json({ error: "META_ACCESS_TOKEN not configured" }, { status: 500 });
-  }
-
   let body;
   try {
     body = await request.json();
@@ -16,7 +9,14 @@ export async function POST(request) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  const token = body?.accessToken?.trim() || process.env.META_ACCESS_TOKEN;
+  const ver = body?.apiVersion?.trim() || process.env.META_API_VERSION || "v21.0";
   const { metaAccountId, month } = body;
+
+  if (!token) {
+    return Response.json({ error: "Meta access token is required." }, { status: 400 });
+  }
+
   if (!metaAccountId || !month) {
     return Response.json({ error: "metaAccountId and month are required" }, { status: 400 });
   }
@@ -56,7 +56,7 @@ export async function POST(request) {
     const insightsUrl =
       `https://graph.facebook.com/${ver}/${actId}/insights` +
       `?level=campaign` +
-      `&fields=campaign_id,campaign_name,spend,impressions,clicks,ctr,actions,cost_per_action_type` +
+      `&fields=campaign_id,campaign_name,date_start,date_stop,spend,impressions,clicks,ctr,actions,cost_per_action_type` +
       `&time_range=${encodeURIComponent(JSON.stringify({ since, until }))}` +
       `&time_increment=7` +
       `&limit=500` +
@@ -85,8 +85,7 @@ export async function POST(request) {
           results: 0,
           impressions: 0,
           clicks: 0,
-          weeklyResults: [],
-          weeklySpend: [],
+          weeklyResults: [0, 0, 0, 0, 0],
         };
       }
 
@@ -100,9 +99,9 @@ export async function POST(request) {
       entry.clicks += clicks;
 
       const resultInfo = detectResult(row.actions);
+      const weekIndex = getWeekIndexForMonth(row.date_start, year, mon);
       entry.results += resultInfo.count;
-      entry.weeklyResults.push(resultInfo.count);
-      entry.weeklySpend.push(spend);
+      entry.weeklyResults[weekIndex] += resultInfo.count;
 
       if (entry.resultType === "Unknown" && resultInfo.type !== "Unknown") {
         entry.resultType = resultInfo.type;
@@ -110,11 +109,6 @@ export async function POST(request) {
     }
 
     const campaigns = Object.values(map).map((c) => {
-      const weeks = [0, 0, 0, 0, 0];
-      c.weeklyResults.forEach((v, i) => {
-        if (i < 5) weeks[i] = v;
-      });
-
       return {
         name: c.name,
         status: c.status,
@@ -123,7 +117,7 @@ export async function POST(request) {
         results: c.results,
         impressions: c.impressions,
         clicks: c.clicks,
-        weeks,
+        weeks: c.weeklyResults,
       };
     });
 
@@ -136,6 +130,23 @@ export async function POST(request) {
   } catch (err) {
     return Response.json({ error: "Failed to reach Meta API: " + err.message }, { status: 502 });
   }
+}
+
+function getWeekIndexForMonth(dateStart, year, month) {
+  if (typeof dateStart === "string") {
+    const parsed = new Date(`${dateStart}T00:00:00Z`);
+    if (!Number.isNaN(parsed.getTime())) {
+      const parsedYear = parsed.getUTCFullYear();
+      const parsedMonth = parsed.getUTCMonth() + 1;
+      const parsedDay = parsed.getUTCDate();
+
+      if (parsedYear === year && parsedMonth === month) {
+        return Math.min(4, Math.floor((parsedDay - 1) / 7));
+      }
+    }
+  }
+
+  return 0;
 }
 
 function detectResult(actions) {
