@@ -2603,6 +2603,14 @@ export default function CRM() {
     () => (isAdmin ? accounts : accounts.filter((item) => allowedAccountIds.has(item.id))),
     [accounts, isAdmin, allowedAccountIds]
   );
+  const visibleMetaAccounts = useMemo(
+    () => visibleAccounts.filter((item) => item.network === "meta"),
+    [visibleAccounts]
+  );
+  const visibleGoogleAccounts = useMemo(
+    () => visibleAccounts.filter((item) => item.network === "google"),
+    [visibleAccounts]
+  );
   const visibleCampaigns = useMemo(
     () => (isAdmin ? campaigns : campaigns.filter((item) => allowedAccountIds.has(item.accountId))),
     [campaigns, isAdmin, allowedAccountIds]
@@ -2621,31 +2629,38 @@ export default function CRM() {
   );
 
   useEffect(() => {
+    const clientDefaultView =
+      visibleMetaAccounts.length && !visibleGoogleAccounts.length
+        ? "ad-accounts-meta"
+        : "google-report";
+
     if (!isAdmin && !CLIENT_ALLOWED_VIEWS.includes(view)) {
-      setView("google-report");
+      setView(clientDefaultView);
+      return;
     }
-  }, [isAdmin, view]);
+
+    if (!isAdmin && view === "google-report" && visibleMetaAccounts.length && !visibleGoogleAccounts.length) {
+      setView("ad-accounts-meta");
+    }
+  }, [isAdmin, view, visibleMetaAccounts.length, visibleGoogleAccounts.length]);
 
   useEffect(() => {
-    const metaList = visibleAccounts.filter((item) => item.network === "meta");
-    const gList = visibleAccounts.filter((item) => item.network === "google");
-
-    if (metaList.length) {
-      if (!metaList.find((item) => item.id === metaAccountId)) {
-        setMetaAccountId(metaList[0].id);
+    if (visibleMetaAccounts.length) {
+      if (!visibleMetaAccounts.find((item) => item.id === metaAccountId)) {
+        setMetaAccountId(visibleMetaAccounts[0].id);
       }
     } else if (metaAccountId) {
       setMetaAccountId("");
     }
 
-    if (gList.length) {
-      if (!gList.find((item) => item.id === googleAccountId)) {
-        setGoogleAccountId(gList[0].id);
+    if (visibleGoogleAccounts.length) {
+      if (!visibleGoogleAccounts.find((item) => item.id === googleAccountId)) {
+        setGoogleAccountId(visibleGoogleAccounts[0].id);
       }
     } else if (googleAccountId) {
       setGoogleAccountId("");
     }
-  }, [visibleAccounts, metaAccountId, googleAccountId]);
+  }, [visibleMetaAccounts, visibleGoogleAccounts, metaAccountId, googleAccountId]);
 
   if (!ready) {
     return (
