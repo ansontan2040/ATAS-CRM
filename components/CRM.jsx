@@ -1059,6 +1059,7 @@ const NAV = [
 ];
 
 const AD_ACCOUNT_KEYS = ["ad-accounts-meta", "ad-accounts-google"];
+const CLIENT_ALLOWED_VIEWS = ["google-report", ...AD_ACCOUNT_KEYS];
 
 function Sidebar({ view, setView, navOpen, closeNav, currentUser, navGroups, storageMode, onSignOut }) {
   const [ddOpen, setDdOpen] = useState(AD_ACCOUNT_KEYS.includes(view));
@@ -1560,11 +1561,11 @@ function MetaConnectionsPanel({ connections, accounts, onAdd, onEdit, onDelete }
   );
 }
 
-function AccountsList({ network, accounts, campaigns, metaConnections = [], onAdd, onEdit, onDelete, onFetchMeta }) {
+function AccountsList({ network, accounts, campaigns, metaConnections = [], onAdd, onEdit, onDelete, onFetchMeta, canManage = true }) {
   const list = accounts.filter((a) => a.network === network);
   return (
     <div>
-      {network === "meta" && (
+      {network === "meta" && canManage && (
         <div style={{ marginBottom: 14, display: "flex", gap: 8 }}>
           <button onClick={onFetchMeta} style={btnPrimary}><RefreshCw size={13} /> Fetch from Meta</button>
           <button onClick={onAdd} style={btnSecondary}><Plus size={14} /> Add manually</button>
@@ -1573,12 +1574,14 @@ function AccountsList({ network, accounts, campaigns, metaConnections = [], onAd
       {list.length === 0 ? (
         <div style={{ ...cardStyle, padding: "40px 24px", textAlign: "center" }}>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>
-            No {network === "google" ? "Google" : "Meta"} ad accounts yet.
+            No {network === "google" ? "Google" : "Meta"} ad accounts {canManage ? "yet." : "assigned to this client yet."}
           </div>
-          {network === "meta" ? (
-            <button onClick={onFetchMeta} style={btnPrimary}><RefreshCw size={13} /> Fetch from Meta</button>
-          ) : (
-            <button onClick={onAdd} style={btnPrimary}><Plus size={14} /> Add first account</button>
+          {canManage && (
+            network === "meta" ? (
+              <button onClick={onFetchMeta} style={btnPrimary}><RefreshCw size={13} /> Fetch from Meta</button>
+            ) : (
+              <button onClick={onAdd} style={btnPrimary}><Plus size={14} /> Add first account</button>
+            )
           )}
         </div>
       ) : (
@@ -1601,10 +1604,12 @@ function AccountsList({ network, accounts, campaigns, metaConnections = [], onAd
                     </div>
                   )}
                 </div>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <button onClick={() => onEdit(a)} aria-label="Edit account" style={iconBtn}><Pencil size={15} /></button>
-                  <button onClick={() => onDelete(a.id)} aria-label="Delete account" style={iconBtn}><Trash2 size={15} /></button>
-                </div>
+                {canManage && (
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => onEdit(a)} aria-label="Edit account" style={iconBtn}><Pencil size={15} /></button>
+                    <button onClick={() => onDelete(a.id)} aria-label="Delete account" style={iconBtn}><Trash2 size={15} /></button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -2616,7 +2621,7 @@ export default function CRM() {
   );
 
   useEffect(() => {
-    if (!isAdmin && view !== "google-report") {
+    if (!isAdmin && !CLIENT_ALLOWED_VIEWS.includes(view)) {
       setView("google-report");
     }
   }, [isAdmin, view]);
@@ -2816,26 +2821,30 @@ export default function CRM() {
 
           {view === "ad-accounts-meta" && (
             <>
-              <MetaConnectionsPanel
-                connections={metaConnections}
-                accounts={accounts}
-                onAdd={() => setModal({ type: "meta-connection", data: null })}
-                onEdit={(connection) => setModal({ type: "meta-connection", data: connection })}
-                onDelete={deleteMetaConnection}
-              />
-              <AccountsList network="meta" accounts={accounts} campaigns={campaigns} metaConnections={metaConnections}
+              {isAdmin && (
+                <MetaConnectionsPanel
+                  connections={metaConnections}
+                  accounts={accounts}
+                  onAdd={() => setModal({ type: "meta-connection", data: null })}
+                  onEdit={(connection) => setModal({ type: "meta-connection", data: connection })}
+                  onDelete={deleteMetaConnection}
+                />
+              )}
+              <AccountsList network="meta" accounts={visibleAccounts} campaigns={visibleCampaigns} metaConnections={metaConnections}
                 onAdd={() => setModal({ type: "account", data: null, network: "meta" })}
                 onEdit={(a) => setModal({ type: "account", data: a, network: a.network })}
                 onDelete={deleteAccount}
-                onFetchMeta={openMetaAccountPicker} />
+                onFetchMeta={openMetaAccountPicker}
+                canManage={isAdmin} />
             </>
           )}
           {view === "ad-accounts-google" && (
-            <AccountsList network="google" accounts={accounts} campaigns={campaigns}
+            <AccountsList network="google" accounts={visibleAccounts} campaigns={visibleCampaigns}
               onAdd={() => setModal({ type: "account", data: null, network: "google" })}
               onEdit={(a) => setModal({ type: "account", data: a, network: a.network })}
               onDelete={deleteAccount}
-              onFetchMeta={() => {}} />
+              onFetchMeta={() => {}}
+              canManage={isAdmin} />
           )}
 
           {view === "users" && <StubView title="Users" blurb="Team member management — invites, roles, permissions. Needs an auth backend to be functional." />}
