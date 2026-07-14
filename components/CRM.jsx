@@ -255,6 +255,7 @@ const fmtRM = (n) =>
   `RM ${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtNum = (n) => Number(n || 0).toLocaleString("en-US");
 const fmtPct = (n) => `${Number(n || 0).toFixed(2)}%`;
+const safeText = (value, fallback = "") => (typeof value === "string" && value.trim() ? value : fallback);
 const maskSecret = (value) => {
   if (!value) return "No token saved";
   if (value.length <= 8) return "Saved";
@@ -353,7 +354,8 @@ function Modal({ title, onClose, children, wide }) {
 }
 
 function StatusPill({ status }) {
-  const active = status === "Active";
+  const label = safeText(status, "Inactive");
+  const active = label === "Active";
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10, fontWeight: 600,
@@ -363,7 +365,7 @@ function StatusPill({ status }) {
       color: active ? C.success : C.danger,
     }}>
       <span style={{ width: 7, height: 7, borderRadius: "50%", display: "inline-block", background: active ? C.successDot : C.danger }} />
-      {status}
+      {label}
     </span>
   );
 }
@@ -1139,7 +1141,7 @@ function Sidebar({ view, setView, navOpen, closeNav, currentUser, navGroups, sto
             display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
             fontFamily: "Inter, sans-serif",
           }}>
-          <LogOut size={13} /> {authConfigured && storageMode === "shared" ? "Sign out of sync" : "Sign out"}
+          <LogOut size={13} /> {storageMode === "shared" ? "Sign out of sync" : "Sign out"}
         </button>
       </div>
     </aside>
@@ -1282,13 +1284,18 @@ function ReportView({
     return () => clearInterval(id);
   }, [lastSynced]);
 
-  const filtered = useMemo(() => campaigns.filter((c) =>
-    c.network === network &&
-    c.accountId === accountId &&
-    c.month === month &&
-    (statusFilter === "all" || c.status.toLowerCase() === statusFilter) &&
-    (!query || c.name.toLowerCase().includes(query.toLowerCase()))
-  ), [campaigns, accountId, month, query, statusFilter, network]);
+  const filtered = useMemo(() => campaigns.filter((c) => {
+    const campaignStatus = safeText(c.status, "Active").toLowerCase();
+    const campaignName = safeText(c.name, "Untitled campaign").toLowerCase();
+
+    return (
+      c.network === network &&
+      c.accountId === accountId &&
+      c.month === month &&
+      (statusFilter === "all" || campaignStatus === statusFilter) &&
+      (!query || campaignName.includes(query.toLowerCase()))
+    );
+  }), [campaigns, accountId, month, query, statusFilter, network]);
 
   const totals = useMemo(() => {
     const spend = filtered.reduce((a, c) => a + Number(c.spend || 0), 0);
@@ -1302,7 +1309,10 @@ function ReportView({
     };
   }, [filtered]);
 
-  const trim = (s) => (s.length > 20 ? s.slice(0, 18) + "…" : s);
+  const trim = (s) => {
+    const text = safeText(s, "Untitled campaign");
+    return text.length > 20 ? text.slice(0, 18) + "…" : text;
+  };
   const spendLeadsData = filtered.map((c) => ({ name: trim(c.name), Spend: Number(c.spend || 0), Leads: Number(c.results || 0) }));
   const cplData = filtered.filter((c) => Number(c.results || 0) > 0).map((c) => ({ name: trim(c.name), CPL: Number(c.spend || 0) / Number(c.results || 0) }));
   const weeklyData = [1, 2, 3, 4, 5].map((w) => ({
@@ -1399,7 +1409,7 @@ function ReportView({
                 return (
                   <tr key={c.id} style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
                     <td style={{ padding: "10px", textAlign: "left", whiteSpace: "nowrap" }}>
-                      <span style={{ fontWeight: 600, color: C.ink }}>{c.name}</span>
+                      <span style={{ fontWeight: 600, color: C.ink }}>{safeText(c.name, "Untitled campaign")}</span>
                       <StatusPill status={c.status} />
                     </td>
                     <td style={mono}>{fmtRM(c.spend)}</td>
