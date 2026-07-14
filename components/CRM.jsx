@@ -1059,10 +1059,17 @@ const NAV = [
 ];
 
 const AD_ACCOUNT_KEYS = ["ad-accounts-meta", "ad-accounts-google"];
-const CLIENT_ALLOWED_VIEWS = ["google-report", ...AD_ACCOUNT_KEYS];
+const CLIENT_ALLOWED_VIEWS = ["meta-report", "google-report"];
+const CLIENT_NAV = [
+  { group: "Dashboard", items: [
+    { key: "meta-report", label: "Meta", icon: BarChart3 },
+    { key: "google-report", label: "Google", icon: LineIcon },
+  ]},
+];
 
 function Sidebar({ view, setView, navOpen, closeNav, currentUser, navGroups, storageMode, onSignOut }) {
   const [ddOpen, setDdOpen] = useState(AD_ACCOUNT_KEYS.includes(view));
+  const isClient = currentUser?.role === "client";
   const go = (k) => { setView(k); closeNav(); };
 
   const linkStyle = (active) => ({
@@ -1106,7 +1113,7 @@ function Sidebar({ view, setView, navOpen, closeNav, currentUser, navGroups, sto
                 </button>
               );
             })}
-            {g.group === "Marketing" && (
+            {g.group === "Marketing" && !isClient && (
               <div style={{ display: "flex", flexDirection: "column" }}>
                 <button onClick={() => setDdOpen((v) => !v)}
                   style={{ ...linkStyle(AD_ACCOUNT_KEYS.includes(view)), justifyContent: "space-between" }}>
@@ -2619,19 +2626,14 @@ export default function CRM() {
     () =>
       isAdmin
         ? NAV
-        : NAV
-            .filter((group) => group.group === "Marketing")
-            .map((group) => ({
-              ...group,
-              items: group.items.filter((item) => item.key === "google-report"),
-            })),
+        : CLIENT_NAV,
     [isAdmin]
   );
 
   useEffect(() => {
     const clientDefaultView =
-      visibleMetaAccounts.length && !visibleGoogleAccounts.length
-        ? "ad-accounts-meta"
+      visibleMetaAccounts.length
+        ? "meta-report"
         : "google-report";
 
     if (!isAdmin && !CLIENT_ALLOWED_VIEWS.includes(view)) {
@@ -2640,7 +2642,7 @@ export default function CRM() {
     }
 
     if (!isAdmin && view === "google-report" && visibleMetaAccounts.length && !visibleGoogleAccounts.length) {
-      setView("ad-accounts-meta");
+      setView("meta-report");
     }
   }, [isAdmin, view, visibleMetaAccounts.length, visibleGoogleAccounts.length]);
 
@@ -2687,7 +2689,7 @@ export default function CRM() {
   const PAGE = {
     pipeline: "Pipeline", dashboard: "Dashboard", today: "Today", contacts: "Contacts",
     closed: "Closed", materials: "Materials",
-    "meta-report": "Marketing Dashboard", "google-report": "Google Marketing Dashboard",
+    "meta-report": "Meta Marketing Dashboard", "google-report": "Google Marketing Dashboard",
     clients: "Clients", "client-logins": "Client Logins",
     "ad-accounts-meta": "Meta Ad Accounts", "ad-accounts-google": "Google Ad Accounts",
     users: "Users", "meta-forms": "Meta Forms", "webhook-logs": "Webhook Logs", settings: "Settings",
