@@ -2622,6 +2622,14 @@ export default function CRM() {
     () => (isAdmin ? campaigns : campaigns.filter((item) => allowedAccountIds.has(item.accountId))),
     [campaigns, isAdmin, allowedAccountIds]
   );
+  const visibleMetaCampaigns = useMemo(
+    () => visibleCampaigns.filter((item) => item.network === "meta"),
+    [visibleCampaigns]
+  );
+  const visibleGoogleCampaigns = useMemo(
+    () => visibleCampaigns.filter((item) => item.network === "google"),
+    [visibleCampaigns]
+  );
   const navGroups = useMemo(
     () =>
       isAdmin
@@ -2640,11 +2648,7 @@ export default function CRM() {
       setView(clientDefaultView);
       return;
     }
-
-    if (!isAdmin && view === "google-report" && visibleMetaAccounts.length && !visibleGoogleAccounts.length) {
-      setView("meta-report");
-    }
-  }, [isAdmin, view, visibleMetaAccounts.length, visibleGoogleAccounts.length]);
+  }, [isAdmin, view, visibleMetaAccounts.length]);
 
   useEffect(() => {
     if (visibleMetaAccounts.length) {
@@ -2790,7 +2794,7 @@ export default function CRM() {
 
           {view === "meta-report" && (
             <ReportView
-              network="meta" accounts={visibleAccounts} campaigns={visibleCampaigns}
+              network="meta" accounts={visibleMetaAccounts} campaigns={visibleMetaCampaigns}
               lastSynced={syncMap.meta}
               accountId={metaAccountId} setAccountId={setMetaAccountId}
               month={metaMonth} setMonth={setMetaMonth}
@@ -2804,7 +2808,7 @@ export default function CRM() {
           )}
           {view === "google-report" && (
             <ReportView
-              network="google" accounts={visibleAccounts} campaigns={visibleCampaigns}
+              network="google" accounts={visibleGoogleAccounts} campaigns={visibleGoogleCampaigns}
               lastSynced={syncMap.google}
               accountId={googleAccountId} setAccountId={setGoogleAccountId}
               month={googleMonth} setMonth={setGoogleMonth}
