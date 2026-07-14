@@ -586,6 +586,7 @@ function DealForm({ initial, contacts, onSave, onClose }) {
 function AccountForm({ initial, network, metaConnections = [], onSave, onClose }) {
   const [name, setName] = useState(initial?.name || "");
   const [metaAccountId, setMetaAccountId] = useState(initial?.metaAccountId || "");
+  const [googleCustomerId, setGoogleCustomerId] = useState(initial?.googleCustomerId || "");
   const [metaConnectionId, setMetaConnectionId] = useState(initial?.metaConnectionId || "");
   const submit = (e) => {
     e.preventDefault();
@@ -596,6 +597,7 @@ function AccountForm({ initial, network, metaConnections = [], onSave, onClose }
       name: name.trim(),
       network: initial?.network || network,
       metaAccountId: metaAccountId.trim() || null,
+      googleCustomerId: googleCustomerId.replace(/\D/g, "") || null,
       metaConnectionId: metaConnectionId || null,
       metaBusinessId: linkedConnection?.businessId || null,
     });
@@ -626,6 +628,11 @@ function AccountForm({ initial, network, metaConnections = [], onSave, onClose }
             </div>
           )}
         </>
+      )}
+      {network === "google" && (
+        <Field label="Google Ads Customer ID">
+          <input value={googleCustomerId} onChange={(e) => setGoogleCustomerId(e.target.value)} style={inputStyle} placeholder="e.g. 1234567890 or 123-456-7890" />
+        </Field>
       )}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <button type="button" onClick={onClose} style={btnSecondary}>Cancel</button>
@@ -1328,9 +1335,11 @@ function ReportView({
       <div style={{ ...cardStyle, padding: "48px 24px", textAlign: "center" }}>
         <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 6 }}>No {network === "google" ? "Google" : "Meta"} ad accounts yet</div>
         <div style={{ color: C.muted, fontSize: 13, marginBottom: 18 }}>
-          Add an ad account to start tracking campaigns and weekly performance.
+          {canManage
+            ? "Add an ad account to start tracking campaigns and weekly performance."
+            : `No ${network === "google" ? "Google" : "Meta"} ad account has been assigned to this client yet.`}
         </div>
-        <button onClick={onAddAccount} style={btnPrimary}><Plus size={14} /> Add account</button>
+        {canManage && <button onClick={onAddAccount} style={btnPrimary}><Plus size={14} /> Add account</button>}
       </div>
     );
   }
@@ -1386,7 +1395,8 @@ function ReportView({
         <div style={{ fontSize: 13, fontWeight: 600, color: C.ink, marginBottom: 10 }}>Campaigns — {monthLabel}</div>
         {filtered.length === 0 ? (
           <div style={{ padding: "30px 0", textAlign: "center", color: C.muted, fontSize: 13, border: `1px dashed ${C.line}`, borderRadius: 8 }}>
-            No campaigns for this account in {monthLabel}. Add one to start tracking.
+            No {network === "google" ? "Google" : "Meta"} campaigns for this account in {monthLabel}
+            {canManage ? ". Add one or sync to start tracking." : "."}
           </div>
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 900, fontFamily: "Inter, sans-serif" }}>
@@ -2398,10 +2408,54 @@ export default function CRM() {
 
   const doSync = async (network, accountIdOverride) => {
     if (network === "google") {
-      // Google sync not yet wired — placeholder
-      const updated = { ...syncMap, google: Date.now() };
-      await persistSnapshot(buildSnapshot({ syncMap: updated }));
-      setToast("Google sync is not connected yet — add campaigns manually for now.");
+      const selectedId = accountIdOverride || googleAccountId;
+      const account = accounts.find((a) => a.id === selectedId);
+      if (!account?.googleCustomerId) {
+        setToast("This account has no Google Ads Customer ID — edit it and add one first.");
+        return;
+      }
+
+      setSyncing(true);
+      setToast("Syncing from Google Ads…");
+
+      try {
+        const res = await fetch("/api/google/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            googleCustomerId: account.googleCustomerId,
+            month: googleMonth,
+          }),
+        });
+        const json = await parseApiResponse(res);
+
+        const freshCampaigns = (json.campaigns || []).map((c) => ({
+          ...c,
+          id: uid(),
+          accountId: selectedId,
+          month: googleMonth,
+          network: "google",
+          createdAt: Date.now(),
+        }));
+
+        const otherCampaigns = campaigns.filter(
+          (c) => !(c.accountId === selectedId && c.month === googleMonth && c.network === "google")
+        );
+        const updatedSync = { ...syncMap, google: Date.now() };
+        await persistSnapshot(buildSnapshot({
+          campaigns: [...otherCampaigns, ...freshCampaigns],
+          syncMap: updatedSync,
+        }), "Could not save the synced Google data.");
+
+        setToast(
+          json.configured === false
+            ? "Google Ads sync is not configured yet, so this month is empty."
+            : `Synced ${freshCampaigns.length} Google campaign${freshCampaigns.length === 1 ? "" : "s"}`
+        );
+      } catch (e) {
+        setToast(`Google sync failed: ${e.message || "Unknown error"}`);
+      }
+      setSyncing(false);
       return;
     }
 
@@ -2556,14 +2610,14 @@ export default function CRM() {
             .filter((group) => group.group === "Marketing")
             .map((group) => ({
               ...group,
-              items: group.items.filter((item) => item.key === "meta-report"),
+              items: group.items.filter((item) => item.key === "google-report"),
             })),
     [isAdmin]
   );
 
   useEffect(() => {
-    if (!isAdmin && view !== "meta-report") {
-      setView("meta-report");
+    if (!isAdmin && view !== "google-report") {
+      setView("google-report");
     }
   }, [isAdmin, view]);
 
